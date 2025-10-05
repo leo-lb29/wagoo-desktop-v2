@@ -1,0 +1,50 @@
+{
+  "name": "electron-nextjs-app",
+  "version": "1.0.0",
+  "description": "Electron wrapper professionnel pour un site Next.js, en JS.",
+  "main": "main.js",
+  "author": "wagoo-app",
+  "scripts": {
+    "start": "electron .",
+    "dev": "ELECTRON_ENABLE_LOGGING=1 electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "publish": "electron-builder --publish always"
+  },
+  "build": {
+    "appId": "com.myapp.electron",
+    "productName": "MyApp",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/.bin"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "leo-lb29",
+      "repo": "wagoo-desktop-v2"
+    }
+  },
+  "dependencies": {
+    "@better-auth/cli": "^1.3.26",
+    "better-auth": "^1.3.26",
+    "electron-store": "^11.0.1",
+    "electron-updater": "^6.6.2",
+    "open": "^10.2.0"
+  },
+  "devDependencies": {
+    "electron": "^38.2.1",
+    "electron-builder": "^24.6.0"
+  }
+}
