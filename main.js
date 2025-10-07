@@ -21,7 +21,7 @@ app.on("ready", () => {
 
   mainWindow.maximize(); // Maximiser la fenêtre
 
-  mainWindow.loadURL("http://localhost:3001");
+  mainWindow.loadURL("http://localhost:3000");
 
   mainWindow.on("closed", () => {
     mainWindow = null;

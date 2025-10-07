@@ -9,6 +9,7 @@
     "dev": "ELECTRON_ENABLE_LOGGING=1 electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
+    "start:linux" : "electron --no-sandbox .",
     "publish": "electron-builder --publish always"
   },
   "build": {
