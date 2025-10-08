@@ -1,6 +1,6 @@
 {
   "name": "electron-nextjs-app",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "Electron wrapper sécurisé pour un site Next.js, avec auto-update et session persistante.",
   "main": "main.js",
   "author": "leo-lb29",
@@ -12,6 +12,10 @@
   },
   "build": {
     "appId": "app.wagoo.electron",
+    "protocols": {
+      "name": "Wagoo",
+      "schemes": ["wagoo"]
+    },
     "productName": "MyApp",
     "directories": {
       "output": "dist",

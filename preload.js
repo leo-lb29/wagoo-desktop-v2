@@ -1,6 +1,10 @@
 const { contextBridge, app } = require("electron");
-const { version } = require("./package.json");
+
 
 contextBridge.exposeInMainWorld("appInfo", {
-  version: version
+  version: "1.0.6",
+});
+
+contextBridge.exposeInMainWorld("electron", {
+  isElectron: true,
 });
