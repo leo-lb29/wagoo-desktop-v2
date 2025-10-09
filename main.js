@@ -153,29 +153,163 @@ function handleDeepLink(rawUrl) {
 function initAutoUpdater() {
   if (!app.isPackaged) return;
 
-  autoUpdater.checkForUpdatesAndNotify();
+  let progressWindow = null;
 
-  autoUpdater.on("update-available", () => {
+  // Petite fonction pour créer une popup de progression
+  function createProgressWindow() {
+    progressWindow = new BrowserWindow({
+      width: 420,
+      height: 250,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      resizable: false,
+      center: true,
+      show: false,
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+      },
+    });
+
+    const html = `
+      <!DOCTYPE html>
+      <html lang="fr">
+        <head>
+          <meta charset="UTF-8" />
+          <style>
+            body {
+              margin: 0;
+              background: transparent;
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              height: 100vh;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            }
+            .card {
+              background: #ffffff;
+              border-radius: 16px;
+              padding: 30px;
+              text-align: center;
+              box-shadow: 0 8px 40px rgba(0,0,0,0.2);
+              width: 340px;
+              animation: fadeIn 0.4s ease-out;
+            }
+            @keyframes fadeIn {
+              from { opacity: 0; transform: scale(0.9); }
+              to { opacity: 1; transform: scale(1); }
+            }
+            .icon {
+              font-size: 48px;
+              margin-bottom: 10px;
+            }
+            h2 {
+              margin: 0;
+              font-size: 20px;
+              color: #333;
+            }
+            .progress-bar {
+              width: 100%;
+              height: 8px;
+              background: #e0e0e0;
+              border-radius: 4px;
+              overflow: hidden;
+              margin: 20px 0;
+            }
+            .fill {
+              height: 100%;
+              width: 0%;
+              background: linear-gradient(90deg, #007AFF, #00C6FF);
+              transition: width 0.3s ease;
+            }
+            .percent {
+              color: #555;
+              font-size: 14px;
+              margin-top: 5px;
+            }
+            .status {
+              color: #999;
+              font-size: 13px;
+              margin-top: 10px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="icon">⬇️</div>
+            <h2>Téléchargement de la mise à jour...</h2>
+            <div class="progress-bar"><div class="fill" id="fill"></div></div>
+            <div class="percent" id="percent">0%</div>
+            <div class="status">Merci de patienter</div>
+          </div>
+
+          <script>
+            const { ipcRenderer } = require('electron');
+            ipcRenderer.on('update-progress', (event, percent) => {
+              const fill = document.getElementById('fill');
+              const text = document.getElementById('percent');
+              fill.style.width = percent + '%';
+              text.innerText = percent.toFixed(1) + '%';
+            });
+
+            ipcRenderer.on('update-complete', () => {
+              document.querySelector('.icon').textContent = '✅';
+              document.querySelector('h2').textContent = 'Mise à jour prête !';
+              document.querySelector('.status').textContent = 'Redémarrage imminent...';
+            });
+          </script>
+        </body>
+      </html>
+    `;
+
+    progressWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+    );
+    progressWindow.once("ready-to-show", () => progressWindow.show());
+  }
+
+  // Crée la fenêtre au moment où une MAJ est dispo
+  autoUpdater.on("update-available", (info) => {
+    autoUpdater.autoDownload = false;
+    createProgressWindow();
+    autoUpdater.downloadUpdate();
+  });
+
+  // Met à jour la progression pendant le téléchargement
+  autoUpdater.on("download-progress", (progressObj) => {
+    const percent = progressObj.percent;
+    if (progressWindow && progressWindow.webContents) {
+      progressWindow.webContents.send("update-progress", percent);
+    }
+  });
+
+  // Quand c'est fini
+  autoUpdater.on("update-downloaded", () => {
+    if (progressWindow && progressWindow.webContents) {
+      progressWindow.webContents.send("update-complete");
+    }
+    setTimeout(() => {
+      if (progressWindow && !progressWindow.isDestroyed())
+        progressWindow.close();
+      autoUpdater.quitAndInstall();
+    }, 2500);
+  });
+
+  autoUpdater.on("error", (err) => {
+    console.error("Erreur de mise à jour :", err);
+    if (progressWindow && !progressWindow.isDestroyed()) {
+      progressWindow.close();
+    }
     dialog.showMessageBox({
-      type: "info",
-      title: "Mise à jour disponible",
-      message: "Une nouvelle version est disponible et sera téléchargée.",
+      type: "error",
+      title: "Erreur de mise à jour",
+      message: err.message,
     });
   });
 
-  autoUpdater.on("update-downloaded", () => {
-    dialog
-      .showMessageBox({
-        type: "info",
-        title: "Mise à jour prête",
-        message: "Redémarrage pour installer la mise à jour.",
-      })
-      .then(() => autoUpdater.quitAndInstall());
-  });
-
-  autoUpdater.on("error", (err) =>
-    console.error("Erreur de mise à jour :", err)
-  );
+  // Lancer la vérification
+  autoUpdater.checkForUpdates();
 }
 
 // macOS: open-url (peut arriver avant ready)
@@ -262,8 +396,8 @@ function createMenu() {
           click: () => mainWindow?.webContents.openDevTools(),
         },
         {
-          label: "Verifier les mises à jour",
-          click: () => autoUpdater.checkForUpdatesAndNotify(),
+          label: "Vérifier les mises à jour",
+          click: () => autoUpdater.checkForUpdates(),
         },
         {
           label: "Afficher les informations de l'application",
