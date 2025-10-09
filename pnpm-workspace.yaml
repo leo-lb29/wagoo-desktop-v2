@@ -3,4 +3,5 @@ onlyBuiltDependencies:
   - '@prisma/engines'
   - better-sqlite3
   - electron
+  - phantomjs-prebuilt
   - prisma
