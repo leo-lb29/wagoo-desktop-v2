@@ -1,6 +1,6 @@
 {
   "name": "electron-nextjs-app",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Electron wrapper sécurisé pour un site Next.js, avec auto-update et session persistante.",
   "main": "main.js",
   "author": "leo-lb29",
