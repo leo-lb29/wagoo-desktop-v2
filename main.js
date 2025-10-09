@@ -1,8 +1,14 @@
 // main.js
-const { app, BrowserWindow, dialog, session, Menu } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  session,
+  Menu,
+  ipcMain,
+} = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
-
 let mainWindow = null;
 // stocke un potentiel deep link reçu avant la création de la fenêtre
 let deeplinkingUrl = null;
@@ -72,6 +78,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    frame: false, // contrôles custom
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -80,13 +87,13 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       devTools: true,
     },
-    show: false, // on attend que la page soit chargée
+    show: false,
   });
 
   const loadMainURL = () => {
     const targetURL = deeplinkingUrl
       ? buildTargetFromWagoo(deeplinkingUrl)
-      : "http://localhost:3000/login-magic-link";
+      : "http://localhost:3000";
 
     mainWindow.loadURL(targetURL).catch((e) => console.error(e));
   };
@@ -151,15 +158,21 @@ function handleDeepLink(rawUrl) {
 
 // Auto-update (inchangé, minimal)
 function initAutoUpdater() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) {
+    console.log("[AutoUpdater] Ignoré (app non packagée)");
+    return;
+  }
+
+  // ✅ Important : définir le feed URL explicitement
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false; // On gère manuellement l'installation
 
   let progressWindow = null;
 
-  // Petite fonction pour créer une popup de progression
   function createProgressWindow() {
     progressWindow = new BrowserWindow({
       width: 420,
-      height: 250,
+      height: 300,
       frame: false,
       transparent: true,
       alwaysOnTop: true,
@@ -188,7 +201,7 @@ function initAutoUpdater() {
               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             }
             .card {
-              background: #ffffff;
+              background: #1b1b1b;
               border-radius: 16px;
               padding: 30px;
               text-align: center;
@@ -204,15 +217,11 @@ function initAutoUpdater() {
               font-size: 48px;
               margin-bottom: 10px;
             }
-            h2 {
-              margin: 0;
-              font-size: 20px;
-              color: #333;
-            }
+            h2 { margin: 0; font-size: 20px; color: #333; }
             .progress-bar {
               width: 100%;
               height: 8px;
-              background: #e0e0e0;
+              background: #6b6b6bff
               border-radius: 4px;
               overflow: hidden;
               margin: 20px 0;
@@ -220,19 +229,11 @@ function initAutoUpdater() {
             .fill {
               height: 100%;
               width: 0%;
-              background: linear-gradient(90deg, #007AFF, #00C6FF);
+              background: linear-gradient(90deg, #ae00ffff, #b700ffff);
               transition: width 0.3s ease;
             }
-            .percent {
-              color: #555;
-              font-size: 14px;
-              margin-top: 5px;
-            }
-            .status {
-              color: #999;
-              font-size: 13px;
-              margin-top: 10px;
-            }
+            .percent { color: #555; font-size: 14px; margin-top: 5px; }
+            .status { color: #999; font-size: 13px; margin-top: 10px; }
           </style>
         </head>
         <body>
@@ -252,7 +253,6 @@ function initAutoUpdater() {
               fill.style.width = percent + '%';
               text.innerText = percent.toFixed(1) + '%';
             });
-
             ipcRenderer.on('update-complete', () => {
               document.querySelector('.icon').textContent = '✅';
               document.querySelector('h2').textContent = 'Mise à jour prête !';
@@ -269,47 +269,58 @@ function initAutoUpdater() {
     progressWindow.once("ready-to-show", () => progressWindow.show());
   }
 
-  // Crée la fenêtre au moment où une MAJ est dispo
+  // 🔍 Log des événements (utile pour debug)
+  autoUpdater.on("checking-for-update", () =>
+    console.log("[Updater] Vérification...")
+  );
+  autoUpdater.on("update-not-available", () =>
+    console.log("[Updater] Aucune mise à jour trouvée.")
+  );
   autoUpdater.on("update-available", (info) => {
-    autoUpdater.autoDownload = false;
+    console.log("[Updater] Mise à jour trouvée :", info.version);
     createProgressWindow();
     autoUpdater.downloadUpdate();
   });
 
-  // Met à jour la progression pendant le téléchargement
   autoUpdater.on("download-progress", (progressObj) => {
     const percent = progressObj.percent;
-    if (progressWindow && progressWindow.webContents) {
+    if (
+      progressWindow &&
+      !progressWindow.isDestroyed() &&
+      progressWindow.webContents
+    ) {
       progressWindow.webContents.send("update-progress", percent);
     }
   });
 
-  // Quand c'est fini
-  autoUpdater.on("update-downloaded", () => {
-    if (progressWindow && progressWindow.webContents) {
+  autoUpdater.on("update-downloaded", (info) => {
+    console.log("[Updater] Téléchargement terminé !");
+    if (
+      progressWindow &&
+      !progressWindow.isDestroyed() &&
+      progressWindow.webContents
+    ) {
       progressWindow.webContents.send("update-complete");
     }
+
     setTimeout(() => {
       if (progressWindow && !progressWindow.isDestroyed())
         progressWindow.close();
-      autoUpdater.quitAndInstall();
+      autoUpdater.quitAndInstall(false, true);
     }, 2500);
   });
 
   autoUpdater.on("error", (err) => {
-    console.error("Erreur de mise à jour :", err);
-    if (progressWindow && !progressWindow.isDestroyed()) {
-      progressWindow.close();
-    }
-    dialog.showMessageBox({
-      type: "error",
-      title: "Erreur de mise à jour",
-      message: err.message,
-    });
+    console.error("[Updater] Erreur :", err);
+    if (progressWindow && !progressWindow.isDestroyed()) progressWindow.close();
+    dialog.showErrorBox(
+      "Erreur de mise à jour",
+      err == null ? "Erreur inconnue" : (err.stack || err).toString()
+    );
   });
 
-  // Lancer la vérification
-  autoUpdater.checkForUpdates();
+  // ✅ Lancer la vérification automatique
+  autoUpdater.checkForUpdatesAndNotify();
 }
 
 // macOS: open-url (peut arriver avant ready)
@@ -481,3 +492,9 @@ app.on("window-all-closed", () => {
 app.on("activate", () => {
   if (!mainWindow) createWindow();
 });
+ipcMain.on("window:minimize", () => mainWindow?.minimize());
+ipcMain.on("window:maximize", () => {
+  if (!mainWindow) return;
+  mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+});
+ipcMain.on("window:close", () => mainWindow?.close());
