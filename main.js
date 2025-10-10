@@ -16,10 +16,10 @@ let splashWindow = null;
 
 function createSplash() {
   splashWindow = new BrowserWindow({
-    width: 400,
-    height: 300,
-    frame: false, // pas de barre de titre
+    width: 320,
+    height: 280,
     transparent: true,
+    frame: false,
     alwaysOnTop: true,
     resizable: false,
     center: true,
@@ -30,44 +30,240 @@ function createSplash() {
   });
 
   const splashHTML = `
-    <!DOCTYPE html>
-    <html lang="fr">
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body {
-            margin: 0;
-            background: #ffffff;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  <!DOCTYPE html>
+  <html lang="fr">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="color-scheme" content="light dark">
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;600;800&display=swap');
+
+        body {
+          margin: 0;
+          height: 100vh;
+          display: flex;
+          justify-content: center;
+          shadow: none;
+          align-items: center;
+          font-family: 'Baloo 2', sans-serif;
+          background: transparent;
+        }
+
+        .card {
+          background: #fff;
+          border-radius: 16px;
+          padding: 40px;
+          text-align: center;
+                  shadow: none;
+          width: 320px;
+          animation: fadeIn 0.4s ease-out;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; transform: scale(0.95); }
+          to { opacity: 1; transform: scale(1); }
+        }
+
+        .logo {
+          font-size: 36px;
+          font-weight: 800;
+          color: #7c3aed;
+          margin-bottom: 20px;
+        }
+
+        .loader {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 16px;
+        }
+
+        .dot {
+          width: 10px;
+          height: 10px;
+          background: #7c3aed;
+          border-radius: 50%;
+          animation: bounce 0.6s infinite alternate;
+        }
+
+        .dot:nth-child(2) { animation-delay: 0.2s; }
+        .dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+          from { transform: translateY(0); opacity: 0.5; }
+          to { transform: translateY(-12px); opacity: 1; }
+        }
+
+        .text {
+          font-weight: 500;
+          color: #333;
+        }
+
+        @media (prefers-color-scheme: dark) {
+          .card {
+            background: #1e1e1e;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
           }
-          .loader {
-            text-align: center;
-            color: #333;
+
+          .logo {
+            color: #a78bfa;
           }
-          .loader img {
-            width: 100px;
-            height: 100px;
-            margin-bottom: 20px;
+
+          .dot {
+            background: #a78bfa;
           }
-        </style>
-      </head>
-      <body>
+
+          .text {
+            color: #e5e5e5;
+          }
+
+          .version {
+            color: #666 !important;
+          }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="logo">Wagoo</div>
         <div class="loader">
-          <img src="https://i.gifer.com/ZZ5H.gif" alt="loader" />
-          <div>Chargement de Wagoo...</div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
         </div>
-      </body>
-    </html>
+    
+        <div class="version" style="margin-top: 12px; font-size: 12px; color: #999;">Sakura-${app.getVersion()}</div>
+      </div>
+    </body>
+  </html>
   `;
 
   splashWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(splashHTML)}`
   );
+
   splashWindow.show();
+}
+
+function showOfflineWindow() {
+  const offlineWindow = new BrowserWindow({
+    width: 480,
+    height: 300,
+    frame: false,
+    transparent: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="color-scheme" content="light dark">
+        <style>
+          body {
+            margin: 0;
+            -webkit-app-region: drag;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+background-color: transparent;
+            color: #333;
+          }
+          .card {
+            text-align: center;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.1);
+            background: #fff;
+            width: 380px;
+          }
+          h2 {
+            margin-bottom: 10px;
+                   -webkit-app-region: no-drag;
+          }
+          p {
+            color: #555;
+            font-size: 14px;
+                   -webkit-app-region: no-drag;
+          }
+          a {
+            color: #b700ff;
+            text-decoration: none;
+            font-weight: 500;
+                   -webkit-app-region: no-drag;
+          }
+          a:hover {
+            text-decoration: underline;
+                   -webkit-app-region: no-drag;
+          }
+          button {
+            margin-top: 20px;
+            padding: 10px 18px;
+            border: none;
+            border-radius: 8px;
+            background: #b700ff;
+            color: white;
+            cursor: pointer;
+                    -webkit-app-region: no-drag;
+            font-size: 14px;
+          }
+          button:hover {
+            background: #a000e0;
+          }
+
+          @media (prefers-color-scheme: dark) {
+            body {
+              color: #e5e5e5;
+            }
+            .card {
+              background: #1e1e1e;
+              box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+            }
+            p {
+              color: #b0b0b0;
+            }
+            a {
+              color: #c77dff;
+            }
+            button {
+              background: #9d4edd;
+            }
+            button:hover {
+              background: #7b2cbf;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>⚠️ Un problème est survenu</h2>
+          <p>Impossible de contacter le serveur Wagoo.</p>
+          <p>Consultez notre uptime : 
+            <a href="https://uptime.wagoo.app" target="_blank">uptime.wagoo.app</a>
+          </p>
+          <button onclick="window.close()">Fermer</button>
+        </div>
+      </body>
+    </html>
+  `;
+
+  offlineWindow.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+  );
+
+  createMenu();
+
+  offlineWindow.once("ready-to-show", () => {
+    offlineWindow.show();
+  });
 }
 
 function createWindow() {
@@ -78,7 +274,9 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    frame: false, // contrôles custom
+    title: "Wagoo Desktop - v" + app.getVersion(),
+    frame: true, // contrôles custom
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -90,12 +288,25 @@ function createWindow() {
     show: false,
   });
 
-  const loadMainURL = () => {
+  const loadMainURL = async () => {
     const targetURL = deeplinkingUrl
       ? buildTargetFromWagoo(deeplinkingUrl)
-      : "http://localhost:3000";
+      : "https://dashtest.wagoo.app";
 
-    mainWindow.loadURL(targetURL).catch((e) => console.error(e));
+    try {
+      // 🧠 Vérifie la connectivité avant de charger
+      const res = await fetch(targetURL, { method: "HEAD", timeout: 5000 });
+      if (!res.ok) throw new Error("Site inaccessible");
+
+      // Si OK, on charge normalement
+      mainWindow.loadURL(targetURL);
+    } catch (err) {
+      console.error("[main] Site non joignable :", err);
+      if (splashWindow) splashWindow.close();
+      if (mainWindow) mainWindow.close();
+
+      showOfflineWindow(); // 🚨 Ouvre la fenêtre d'erreur
+    }
   };
 
   loadMainURL();
@@ -114,10 +325,10 @@ function createWindow() {
     mainWindow = null;
   });
 
-  createMenu();
+  // createMenu();
 }
 
-// Convertit "wagoo://..." -> "http://localhost:3000/<path>?<query>"
+// Convertit "wagoo://..." -> "https://dashtest.wagoo.app/<path>?<query>"
 function buildTargetFromWagoo(rawUrl) {
   try {
     const urlObj = new URL(rawUrl);
@@ -130,12 +341,12 @@ function buildTargetFromWagoo(rawUrl) {
     if (urlObj.pathname && urlObj.pathname !== "/") path += urlObj.pathname;
     // nettoie les slashes en début
     path = path.replace(/^\/+/, "");
-    const base = "http://localhost:3000";
+    const base = "https://dashtest.wagoo.app";
     // si pas de path, on ouvre la racine avec les querys (ex: ?token=...)
     return path ? `${base}/${path}${urlObj.search}` : `${base}${urlObj.search}`;
   } catch (err) {
     console.error("[main] buildTargetFromWagoo error:", err, "rawUrl:", rawUrl);
-    return "http://localhost:3000/";
+    return "https://dashtest.wagoo.app/";
   }
 }
 
@@ -163,165 +374,78 @@ function initAutoUpdater() {
     return;
   }
 
-  // ✅ Important : définir le feed URL explicitement
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false; // On gère manuellement l'installation
+  autoUpdater.autoInstallOnAppQuit = false;
 
-  let progressWindow = null;
+  // 🔍 Événements de l'auto-updater
+  autoUpdater.on("checking-for-update", () => {
+    console.log("[Updater] Vérification...");
+    mainWindow?.webContents.send("updater:checking");
+  });
 
-  function createProgressWindow() {
-    progressWindow = new BrowserWindow({
-      width: 420,
-      height: 300,
-      frame: false,
-      transparent: true,
-      alwaysOnTop: true,
-      resizable: false,
-      center: true,
-      show: false,
-      webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false,
-      },
-    });
+  autoUpdater.on("update-not-available", () => {
+    console.log("[Updater] Aucune mise à jour trouvée.");
+    mainWindow?.webContents.send("updater:not-available");
+  });
 
-    const html = `
-      <!DOCTYPE html>
-      <html lang="fr">
-        <head>
-          <meta charset="UTF-8" />
-          <style>
-            body {
-              margin: 0;
-              background: transparent;
-              display: flex;
-              justify-content: center;
-              align-items: center;
-              height: 100vh;
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            }
-            .card {
-              background: #1b1b1b;
-              border-radius: 16px;
-              padding: 30px;
-              text-align: center;
-              box-shadow: 0 8px 40px rgba(0,0,0,0.2);
-              width: 340px;
-              animation: fadeIn 0.4s ease-out;
-            }
-            @keyframes fadeIn {
-              from { opacity: 0; transform: scale(0.9); }
-              to { opacity: 1; transform: scale(1); }
-            }
-            .icon {
-              font-size: 48px;
-              margin-bottom: 10px;
-            }
-            h2 { margin: 0; font-size: 20px; color: #333; }
-            .progress-bar {
-              width: 100%;
-              height: 8px;
-              background: #6b6b6bff
-              border-radius: 4px;
-              overflow: hidden;
-              margin: 20px 0;
-            }
-            .fill {
-              height: 100%;
-              width: 0%;
-              background: linear-gradient(90deg, #ae00ffff, #b700ffff);
-              transition: width 0.3s ease;
-            }
-            .percent { color: #555; font-size: 14px; margin-top: 5px; }
-            .status { color: #999; font-size: 13px; margin-top: 10px; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="icon">⬇️</div>
-            <h2>Téléchargement de la mise à jour...</h2>
-            <div class="progress-bar"><div class="fill" id="fill"></div></div>
-            <div class="percent" id="percent">0%</div>
-            <div class="status">Merci de patienter</div>
-          </div>
-
-          <script>
-            const { ipcRenderer } = require('electron');
-            ipcRenderer.on('update-progress', (event, percent) => {
-              const fill = document.getElementById('fill');
-              const text = document.getElementById('percent');
-              fill.style.width = percent + '%';
-              text.innerText = percent.toFixed(1) + '%';
-            });
-            ipcRenderer.on('update-complete', () => {
-              document.querySelector('.icon').textContent = '✅';
-              document.querySelector('h2').textContent = 'Mise à jour prête !';
-              document.querySelector('.status').textContent = 'Redémarrage imminent...';
-            });
-          </script>
-        </body>
-      </html>
-    `;
-
-    progressWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-    );
-    progressWindow.once("ready-to-show", () => progressWindow.show());
-  }
-
-  // 🔍 Log des événements (utile pour debug)
-  autoUpdater.on("checking-for-update", () =>
-    console.log("[Updater] Vérification...")
-  );
-  autoUpdater.on("update-not-available", () =>
-    console.log("[Updater] Aucune mise à jour trouvée.")
-  );
   autoUpdater.on("update-available", (info) => {
     console.log("[Updater] Mise à jour trouvée :", info.version);
-    createProgressWindow();
-    autoUpdater.downloadUpdate();
+    mainWindow?.webContents.send("updater:available", {
+      version: info.version,
+      releaseDate: info.releaseDate,
+      releaseNotes: info.releaseNotes,
+    });
   });
 
   autoUpdater.on("download-progress", (progressObj) => {
-    const percent = progressObj.percent;
-    if (
-      progressWindow &&
-      !progressWindow.isDestroyed() &&
-      progressWindow.webContents
-    ) {
-      progressWindow.webContents.send("update-progress", percent);
-    }
+    mainWindow?.webContents.send("updater:progress", {
+      percent: progressObj.percent,
+      transferred: progressObj.transferred,
+      total: progressObj.total,
+    });
   });
 
   autoUpdater.on("update-downloaded", (info) => {
     console.log("[Updater] Téléchargement terminé !");
-    if (
-      progressWindow &&
-      !progressWindow.isDestroyed() &&
-      progressWindow.webContents
-    ) {
-      progressWindow.webContents.send("update-complete");
-    }
-
-    setTimeout(() => {
-      if (progressWindow && !progressWindow.isDestroyed())
-        progressWindow.close();
-      autoUpdater.quitAndInstall(false, true);
-    }, 2500);
+    mainWindow?.webContents.send("updater:downloaded", {
+      version: info.version,
+    });
   });
 
   autoUpdater.on("error", (err) => {
     console.error("[Updater] Erreur :", err);
-    if (progressWindow && !progressWindow.isDestroyed()) progressWindow.close();
-    dialog.showErrorBox(
-      "Erreur de mise à jour",
-      err == null ? "Erreur inconnue" : (err.stack || err).toString()
-    );
+    mainWindow?.webContents.send("updater:error", {
+      message: err.message || "Erreur inconnue",
+    });
   });
 
-  // ✅ Lancer la vérification automatique
+  // ✅ Vérification automatique au démarrage
   autoUpdater.checkForUpdatesAndNotify();
 }
+
+// 📡 Handlers IPC pour le site web
+ipcMain.handle("updater:check", async () => {
+  try {
+    await autoUpdater.checkForUpdates();
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("updater:download", async () => {
+  try {
+    await autoUpdater.downloadUpdate();
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("updater:install", () => {
+  autoUpdater.quitAndInstall(false, true);
+  return { success: true };
+});
 
 // macOS: open-url (peut arriver avant ready)
 app.on("open-url", (event, url) => {
@@ -413,64 +537,134 @@ function createMenu() {
         {
           label: "Afficher les informations de l'application",
           click: () => {
-            const infoWindow = new BrowserWindow({
-              width: 500,
-              height: 400,
-              parent: mainWindow,
-              modal: true,
-              resizable: false,
-              webPreferences: {
-                nodeIntegration: false,
-                contextIsolation: true,
-              },
-            });
+            const showAboutModal = async () => {
+              try {
+                const res = await fetch("https://dashtest.wagoo.app/version", {
+                  method: "HEAD",
+                  timeout: 5000,
+                });
+                if (res.ok) {
+                  mainWindow.loadURL("https://dashtest.wagoo.app/version");
+                } else {
+                  throw new Error("Site non accessible");
+                }
+              } catch (err) {
+                // Site non joignable, afficher le HTML statique
+                const infoWindow = new BrowserWindow({
+                  width: 500,
+                  height: 400,
+                  parent: mainWindow,
+                  modal: true,
+                  resizable: false,
+                  frame: false,
+                  transparent: true,
+                  webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                  },
+                });
 
-            const htmlContent = `
-      <!DOCTYPE html>
-      <html lang="fr">
-        <head>
-          <meta charset="UTF-8">
-          <title>À propos</title>
-          <style>
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-              margin: 0;
-              padding: 30px;
-              background-color: #f5f5f5;
-              color: #333;
-            }
-            .container {
-              background: #fff;
-              padding: 30px;
-              border-radius: 10px;
-              box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-            }
-            h1 {
-              margin-top: 0;
-              font-size: 1.8em;
-            }
-            p {
-              color: #555;
-              line-height: 1.6;
-              margin: 10px 0;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>À propos de l'application</h1>
-            <p><strong>Version :</strong> ${app.getVersion()}</p>
-            <p><strong>Auteur :</strong> WAGOO SAAS</p>
-            <p><strong>POWERED By :</strong> Electron.JS</p>
-          </div>
-        </body>
-      </html>
-    `;
+                const htmlContent = `
+                <!DOCTYPE html>
+                <html lang="fr">
+                  <head>
+                    <meta charset="UTF-8">
+                    <meta name="color-scheme" content="light dark">
+                    <title>À propos</title>
+                    <style>
+                      body {
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        margin: 0;
+                        padding: 30px;
+                        background-color: transparent;
+                        color: #333;
+                        -webkit-app-region: drag;
+                      }
+                      .container {
+                        background: #fff;
+                        padding: 30px;
+                        border-radius: 10px;
+                        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+                        position: relative;
+                      }
+                      .close-btn {
+                        position: absolute;
+                        top: 15px;
+                        right: 15px;
+                        width: 30px;
+                        height: 30px;
+                        border-radius: 50%;
+                        background: #f0f0f0;
+                        border: none;
+                        cursor: pointer;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 18px;
+                        color: #666;
+                        -webkit-app-region: no-drag;
+                        transition: background 0.2s;
+                      }
+                      .close-btn:hover {
+                        background: #e0e0e0;
+                        color: #333;
+                      }
+                      h1 {
+                        margin-top: 0;
+                        font-size: 1.8em;
+                        -webkit-app-region: no-drag;
+                      }
+                      p {
+                        color: #555;
+                        line-height: 1.6;
+                        margin: 10px 0;
+                        -webkit-app-region: no-drag;
+                      }
 
-            infoWindow.loadURL(
-              `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`
-            );
-            infoWindow.setMenuBarVisibility(false);
+                      @media (prefers-color-scheme: dark) {
+                        body {
+                          color: #e5e5e5;
+                        }
+                        .container {
+                          background: #1e1e1e;
+                          box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+                        }
+                        .close-btn {
+                          background: #2a2a2a;
+                          color: #999;
+                        }
+                        .close-btn:hover {
+                          background: #3a3a3a;
+                          color: #e5e5e5;
+                        }
+                        p {
+                          color: #b0b0b0;
+                        }
+                      }
+                    </style>
+                  </head>
+                  <body>
+                    <div class="container">
+                      <button class="close-btn" onclick="window.close()">×</button>
+                      <h1>À propos de l'application</h1>
+                      <p><strong>Version :</strong> ${app.getVersion()}</p>
+                      <p><strong>Auteur :</strong> WAGOO SAAS</p>
+                      <p><strong>POWERED By :</strong> Electron.JS</p>
+                    </div>
+                  </body>
+                </html>
+              `;
+
+                infoWindow.loadURL(
+                  `data:text/html;charset=utf-8,${encodeURIComponent(
+                    htmlContent
+                  )}`
+                );
+                infoWindow.setMenuBarVisibility(false);
+              }
+            };
+
+            showAboutModal();
           },
         },
 
@@ -490,7 +684,7 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 app.on("activate", () => {
-  if (!mainWindow) createWindow();
+  if (!mainWindow) creatcrWindow();
 });
 ipcMain.on("window:minimize", () => mainWindow?.minimize());
 ipcMain.on("window:maximize", () => {
@@ -498,3 +692,7 @@ ipcMain.on("window:maximize", () => {
   mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
 });
 ipcMain.on("window:close", () => mainWindow?.close());
+
+ipcMain.handle("app:getVersion", () => {
+  return app.getVersion();
+});

@@ -1,13 +1,14 @@
 {
-  "name": "electron-nextjs-app",
-  "version": "1.0.15",
+  "name": "wagoo",
+  "version": "1.0.24",
   "description": "Electron wrapper sécurisé pour un site Next.js, avec auto-update et session persistante.",
   "main": "main.js",
   "author": "leo-lb29",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
-    "publish": "electron-builder --publish always"
+    "publish": "electron-builder --publish always",
+    "icons": "pnpx electron-icon-maker --input=./assets/logo.png --output=./assets/icons"
   },
   "build": {
     "appId": "app.wagoo.electron",
@@ -24,6 +25,7 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "package.json",
       "assets/**/*",
       "out/**/*",
@@ -50,7 +52,6 @@
   },
   "devDependencies": {
     "electron": "^38.2.1",
-    "electron-builder": "^26.0.12",
-    "electron-icon-maker": "^0.0.5"
+    "electron-builder": "^26.0.12"
   }
 }
