@@ -283,10 +283,11 @@ function createWindow() {
       sandbox: true,
       session: wagooSession,
       preload: path.join(__dirname, "preload.js"),
-      devTools: true,
+      devTools: false,
     },
     show: false,
   });
+
 
   const loadMainURL = async () => {
     const targetURL = deeplinkingUrl
@@ -525,11 +526,11 @@ function createMenu() {
     {
       label: "Application",
       submenu: [
-        {
-          label: "Ouvrir DevTools",
-          accelerator: "F12",
-          click: () => mainWindow?.webContents.openDevTools(),
-        },
+        // {
+        //   label: "Ouvrir DevTools",
+        //   accelerator: "F12",
+        //   click: () => mainWindow?.webContents.openDevTools(),
+        // },
         {
           label: "Vérifier les mises à jour",
           click: () => autoUpdater.checkForUpdates(),
