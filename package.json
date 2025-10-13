@@ -3,9 +3,12 @@
   "version": "1.0.27",
   "description": "Electron wrapper sécurisé pour un site Next.js, avec auto-update et session persistante.",
   "main": "main.js",
-  "author": "leo-lb29",
+  "author": {
+    "name": "leo-lb29",
+    "email": "contact@wagoo.app"
+  },
   "scripts": {
-    "start": "electron .",
+    "start": "electron . ",
     "build": "electron-builder",
     "publish": "electron-builder --publish always",
     "icons": "pnpx electron-icon-maker --input=./assets/logo.png --output=./assets/icons"
@@ -36,8 +39,12 @@
       "target": "nsis"
     },
     "linux": {
-      "target": "AppImage",
-      "icon": "assets"
+      "icon": "assets/icons/png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network"
     },
     "publish": [
       {

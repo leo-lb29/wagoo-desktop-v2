@@ -14,6 +14,11 @@ let mainWindow = null;
 let deeplinkingUrl = null;
 let splashWindow = null;
 
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('enable-features', 'UseOzonePlatform');
+  app.commandLine.appendSwitch('ozone-platform', 'wayland'); // ou 'x11'
+}
+
 function createSplash() {
   splashWindow = new BrowserWindow({
     width: 320,
@@ -697,3 +702,5 @@ ipcMain.on("window:close", () => mainWindow?.close());
 ipcMain.handle("app:getVersion", () => {
   return app.getVersion();
 });
+
+
