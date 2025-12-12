@@ -1,6 +1,6 @@
 {
   "name": "wagoo",
-  "version": "1.0.28",
+  "version": "1.0.27",
   "description": "Electron wrapper sécurisé pour un site Next.js, avec auto-update et session persistante.",
   "main": "main.js",
   "author": {
@@ -35,7 +35,7 @@
       "logo.ico"
     ],
     "win": {
-      "icon": "assets/icons/icons/win/icon.ico",
+      "icon": "assets/icons/win/icon.ico",
       "target": "nsis"
     },
     "linux": {
@@ -55,10 +55,12 @@
     ]
   },
   "dependencies": {
-    "electron-updater": "^6.6.2"
+    "electron-notifications": "^1.0.0",
+    "electron-updater": "^6.6.2",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
-    "electron": "^38.2.1",
+    "electron": "^38.7.2",
     "electron-builder": "^26.0.12"
   }
 }

@@ -280,7 +280,7 @@ function createWindow() {
     width: 1200,
     height: 800,
     title: "Wagoo Desktop - v" + app.getVersion(),
-    frame: true, // contrôles custom
+    frame: false, // contrôles custom
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -297,7 +297,7 @@ function createWindow() {
   const loadMainURL = async () => {
     const targetURL = deeplinkingUrl
       ? buildTargetFromWagoo(deeplinkingUrl)
-      : "https://dashtest.wagoo.app";
+      : "http://localhost:3000";
 
     try {
       // 🧠 Vérifie la connectivité avant de charger
@@ -334,7 +334,7 @@ function createWindow() {
   // createMenu();
 }
 
-// Convertit "wagoo://..." -> "https://dashtest.wagoo.app/<path>?<query>"
+// Convertit "wagoo://..." -> "http://localhost:3000/<path>?<query>"
 function buildTargetFromWagoo(rawUrl) {
   try {
     const urlObj = new URL(rawUrl);
@@ -347,12 +347,12 @@ function buildTargetFromWagoo(rawUrl) {
     if (urlObj.pathname && urlObj.pathname !== "/") path += urlObj.pathname;
     // nettoie les slashes en début
     path = path.replace(/^\/+/, "");
-    const base = "https://dashtest.wagoo.app";
+    const base = "http://localhost:3000";
     // si pas de path, on ouvre la racine avec les querys (ex: ?token=...)
     return path ? `${base}/${path}${urlObj.search}` : `${base}${urlObj.search}`;
   } catch (err) {
     console.error("[main] buildTargetFromWagoo error:", err, "rawUrl:", rawUrl);
-    return "https://dashtest.wagoo.app/";
+    return "http://localhost:3000/";
   }
 }
 
@@ -545,12 +545,12 @@ function createMenu() {
           click: () => {
             const showAboutModal = async () => {
               try {
-                const res = await fetch("https://dashtest.wagoo.app/version", {
+                const res = await fetch("http://localhost:3000/version", {
                   method: "HEAD",
                   timeout: 5000,
                 });
                 if (res.ok) {
-                  mainWindow.loadURL("https://dashtest.wagoo.app/version");
+                  mainWindow.loadURL("http://localhost:3000/version");
                 } else {
                   throw new Error("Site non accessible");
                 }
