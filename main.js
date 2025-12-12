@@ -4,20 +4,340 @@ const {
   BrowserWindow,
   dialog,
   session,
+  Tray,
   Menu,
   ipcMain,
+  Notification,
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
+const dgram = require("dgram");
+const WebSocket = require("ws");
+const os = require("os");
+
+let tray = null;
 let mainWindow = null;
-// stocke un potentiel deep link reçu avant la création de la fenêtre
 let deeplinkingUrl = null;
 let splashWindow = null;
+let wss = null;
+let discoverySocket = null;
+let wsConnections = new Set();
 
-if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('enable-features', 'UseOzonePlatform');
-  app.commandLine.appendSwitch('ozone-platform', 'wayland'); // ou 'x11'
+// Configuration
+const WS_PORT = 9876; // Port modifié pour éviter les conflits
+const DISCOVERY_PORT = 9877;
+const SERVICE_NAME = "wagoo-desktop";
+
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("enable-features", "UseOzonePlatform");
+  app.commandLine.appendSwitch("ozone-platform", "wayland");
 }
+
+// ========================================
+// DÉCOUVERTE RÉSEAU (UDP Broadcast)
+// ========================================
+
+function getLocalIPAddress() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // Ignore IPv6 et localhost
+      if (iface.family === "IPv4" && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return "127.0.0.1";
+}
+
+function startDiscoveryService() {
+  discoverySocket = dgram.createSocket("udp4");
+
+  discoverySocket.on("error", (err) => {
+    console.error("[Discovery] Erreur:", err);
+    discoverySocket.close();
+  });
+
+  discoverySocket.on("message", (msg, rinfo) => {
+    const message = msg.toString();
+    console.log(
+      `[Discovery] Message reçu de ${rinfo.address}:${rinfo.port} - ${message}`
+    );
+
+    // Répondre uniquement aux requêtes de découverte Wagoo
+    if (message === "WAGOO_DISCOVERY_REQUEST") {
+      const localIP = getLocalIPAddress();
+      const response = JSON.stringify({
+        service: SERVICE_NAME,
+        ip: localIP,
+        wsPort: WS_PORT,
+        hostname: os.hostname(),
+        version: app.getVersion(),
+        platform: process.platform,
+      });
+
+      discoverySocket.send(response, rinfo.port, rinfo.address, (err) => {
+        if (err) {
+          console.error("[Discovery] Erreur envoi réponse:", err);
+        } else {
+          console.log(
+            `[Discovery] Réponse envoyée à ${rinfo.address}:${rinfo.port}`
+          );
+        }
+      });
+    }
+  });
+
+  discoverySocket.on("listening", () => {
+    const address = discoverySocket.address();
+    console.log(
+      `[Discovery] Service d'écoute sur ${address.address}:${address.port}`
+    );
+    discoverySocket.setBroadcast(true);
+  });
+
+  discoverySocket.bind(DISCOVERY_PORT);
+}
+
+function stopDiscoveryService() {
+  if (discoverySocket) {
+    discoverySocket.close();
+    discoverySocket = null;
+    console.log("[Discovery] Service arrêté");
+  }
+}
+
+// ========================================
+// SERVEUR WEBSOCKET
+// ========================================
+
+function startWebSocketServer() {
+  try {
+    wss = new WebSocket.Server({
+      port: WS_PORT,
+      host: "0.0.0.0",
+    });
+  } catch (err) {
+    console.error("[WebSocket] Erreur lors du démarrage:", err);
+    // Tenter avec un port alternatif
+    try {
+      wss = new WebSocket.Server({
+        port: WS_PORT + 1,
+        host: "0.0.0.0",
+      });
+      console.log(`[WebSocket] Démarré sur le port alternatif ${WS_PORT + 1}`);
+    } catch (err2) {
+      console.error("[WebSocket] Impossible de démarrer le serveur:", err2);
+      return;
+    }
+  }
+
+  wss.on("error", (err) => {
+    console.error("[WebSocket] Erreur serveur:", err);
+  });
+
+  wss.on("listening", () => {
+    const localIP = getLocalIPAddress();
+    console.log(`[WebSocket] Serveur démarré sur ws://${localIP}:${WS_PORT}`);
+  });
+
+  wss.on("connection", (ws, req) => {
+    const clientIP = req.socket.remoteAddress;
+    console.log(`[WebSocket] Nouvelle connexion depuis ${clientIP}`);
+    wsConnections.add(ws);
+
+    // Message de bienvenue
+    ws.send(
+      JSON.stringify({
+        type: "connected",
+        message: "Connecté à Wagoo Desktop",
+        version: app.getVersion(),
+      })
+    );
+
+    ws.on("message", (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        console.log("[WebSocket] Message reçu:", message);
+
+        handleWebSocketMessage(message, ws);
+      } catch (err) {
+        console.error("[WebSocket] Erreur parsing message:", err);
+      }
+    });
+
+    ws.on("close", () => {
+      console.log(`[WebSocket] Connexion fermée depuis ${clientIP}`);
+      wsConnections.delete(ws);
+    });
+
+    ws.on("error", (err) => {
+      console.error("[WebSocket] Erreur connexion:", err);
+      wsConnections.delete(ws);
+    });
+  });
+}
+
+function handleWebSocketMessage(message, ws) {
+  const { type, data } = message;
+
+  switch (type) {
+    case "qr_scanned":
+      handleQRScanned(data, ws);
+      break;
+
+    case "ping":
+      ws.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
+      break;
+
+    case "notification":
+      showNotification(data.title, data.body);
+      break;
+
+    default:
+      console.log("[WebSocket] Type de message inconnu:", type);
+      // Envoyer au renderer si nécessaire
+      if (mainWindow) {
+        mainWindow.webContents.send("ws:message", message);
+      }
+  }
+}
+
+function handleQRScanned(data, ws) {
+  console.log("[QR Code] Scanné:", data);
+
+  // Afficher une notification système avec callback
+  showNotification(
+    "QR Code scanné",
+    data.content || "Code détecté",
+    data.content
+  );
+
+  // Envoyer au renderer (site web)
+  if (mainWindow) {
+    mainWindow.webContents.send("qr:scanned", data);
+  }
+
+  // Confirmer la réception au mobile
+  ws.send(
+    JSON.stringify({
+      type: "qr_received",
+      success: true,
+      timestamp: Date.now(),
+    })
+  );
+
+  // Si le QR contient un deep link Wagoo
+  if (data.content && data.content.startsWith("wagoo://")) {
+    handleDeepLink(data.content);
+  }
+}
+
+function showNotification(title, body, qrContent = null) {
+  if (Notification.isSupported()) {
+    const notification = new Notification({
+      title: title,
+      body: body,
+      icon: path.join(__dirname, "assets/icon.png"), // Ajustez le chemin
+      timeoutType: "default",
+    });
+
+    // Gestion du clic sur la notification
+    notification.on("click", () => {
+      console.log("[Notification] Cliquée");
+
+      // Mettre la fenêtre au premier plan
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) {
+          mainWindow.restore();
+        }
+        mainWindow.show();
+        mainWindow.focus();
+
+        // Si le QR contient une URL HTTP/HTTPS, la charger
+        if (qrContent) {
+          if (
+            qrContent.startsWith("http://") ||
+            qrContent.startsWith("https://")
+          ) {
+            // C'est une URL web classique
+            mainWindow.loadURL(qrContent).catch((err) => {
+              console.error("[Notification] Erreur chargement URL:", err);
+              // En cas d'erreur, charger la page d'accueil avec le QR en paramètre
+              mainWindow.loadURL(
+                `http://localhost:3000?qr=${encodeURIComponent(qrContent)}`
+              );
+            });
+          } else if (qrContent.startsWith("wagoo://")) {
+            // C'est un deep link Wagoo
+            handleDeepLink(qrContent);
+          } else {
+            // Autre contenu, envoyer vers la page d'accueil avec le contenu
+            mainWindow.loadURL(
+              `http://localhost:3000?qr=${encodeURIComponent(qrContent)}`
+            );
+          }
+        }
+      }
+    });
+
+    notification.show();
+  }
+}
+
+function stopWebSocketServer() {
+  if (wss) {
+    wsConnections.forEach((ws) => {
+      ws.close();
+    });
+    wsConnections.clear();
+
+    wss.close(() => {
+      console.log("[WebSocket] Serveur arrêté");
+    });
+    wss = null;
+  }
+}
+
+// Broadcast un message à tous les clients connectés
+function broadcastToClients(message) {
+  wsConnections.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
+    }
+  });
+}
+
+// ========================================
+// IPC HANDLERS POUR WEBSOCKET
+// ========================================
+
+ipcMain.handle("ws:send", async (event, message) => {
+  broadcastToClients(message);
+  return { success: true };
+});
+
+ipcMain.handle("ws:getStatus", async () => {
+  return {
+    running: wss !== null,
+    connections: wsConnections.size,
+    port: WS_PORT,
+    ip: getLocalIPAddress(),
+  };
+});
+
+ipcMain.handle("discovery:getInfo", async () => {
+  return {
+    running: discoverySocket !== null,
+    port: DISCOVERY_PORT,
+    ip: getLocalIPAddress(),
+    serviceName: SERVICE_NAME,
+  };
+});
+
+// ========================================
+// RESTE DU CODE (inchangé)
+// ========================================
 
 function createSplash() {
   splashWindow = new BrowserWindow({
@@ -59,7 +379,7 @@ function createSplash() {
           border-radius: 16px;
           padding: 40px;
           text-align: center;
-                  shadow: none;
+          shadow: none;
           width: 320px;
           animation: fadeIn 0.4s ease-out;
         }
@@ -179,7 +499,7 @@ function showOfflineWindow() {
             justify-content: center;
             flex-direction: column;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-background-color: transparent;
+            background-color: transparent;
             color: #333;
           }
           .card {
@@ -192,22 +512,22 @@ background-color: transparent;
           }
           h2 {
             margin-bottom: 10px;
-                   -webkit-app-region: no-drag;
+            -webkit-app-region: no-drag;
           }
           p {
             color: #555;
             font-size: 14px;
-                   -webkit-app-region: no-drag;
+            -webkit-app-region: no-drag;
           }
           a {
             color: #b700ff;
             text-decoration: none;
             font-weight: 500;
-                   -webkit-app-region: no-drag;
+            -webkit-app-region: no-drag;
           }
           a:hover {
             text-decoration: underline;
-                   -webkit-app-region: no-drag;
+            -webkit-app-region: no-drag;
           }
           button {
             margin-top: 20px;
@@ -217,7 +537,7 @@ background-color: transparent;
             background: #b700ff;
             color: white;
             cursor: pointer;
-                    -webkit-app-region: no-drag;
+            -webkit-app-region: no-drag;
             font-size: 14px;
           }
           button:hover {
@@ -272,7 +592,7 @@ background-color: transparent;
 }
 
 function createWindow() {
-  createSplash(); // affiche le loader
+  createSplash();
 
   const wagooSession = session.fromPartition("persist:wagoo-session");
 
@@ -280,7 +600,7 @@ function createWindow() {
     width: 1200,
     height: 800,
     title: "Wagoo Desktop - v" + app.getVersion(),
-    frame: false, // contrôles custom
+    frame: false,
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -293,31 +613,27 @@ function createWindow() {
     show: false,
   });
 
-
   const loadMainURL = async () => {
     const targetURL = deeplinkingUrl
       ? buildTargetFromWagoo(deeplinkingUrl)
       : "http://localhost:3000";
 
     try {
-      // 🧠 Vérifie la connectivité avant de charger
       const res = await fetch(targetURL, { method: "HEAD", timeout: 5000 });
       if (!res.ok) throw new Error("Site inaccessible");
 
-      // Si OK, on charge normalement
       mainWindow.loadURL(targetURL);
     } catch (err) {
       console.error("[main] Site non joignable :", err);
       if (splashWindow) splashWindow.close();
       if (mainWindow) mainWindow.close();
 
-      showOfflineWindow(); // 🚨 Ouvre la fenêtre d'erreur
+      showOfflineWindow();
     }
   };
 
   loadMainURL();
 
-  // Quand la page principale est prête, on ferme le loader et on montre la fenêtre
   mainWindow.webContents.on("did-finish-load", () => {
     if (splashWindow) {
       splashWindow.close();
@@ -330,25 +646,17 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
-
-  // createMenu();
 }
 
-// Convertit "wagoo://..." -> "http://localhost:3000/<path>?<query>"
 function buildTargetFromWagoo(rawUrl) {
   try {
     const urlObj = new URL(rawUrl);
-    // Certains liens peuvent utiliser le hostname comme première partie du chemin
-    // e.g. wagoo://login-magic-link?token=...  => hostname = 'login-magic-link'
-    // ou wagoo://app/login-magic-link?token=... => hostname='app', pathname='/login-magic-link'
     let path = "";
     if (urlObj.hostname && urlObj.hostname !== "")
       path += `/${urlObj.hostname}`;
     if (urlObj.pathname && urlObj.pathname !== "/") path += urlObj.pathname;
-    // nettoie les slashes en début
     path = path.replace(/^\/+/, "");
     const base = "http://localhost:3000";
-    // si pas de path, on ouvre la racine avec les querys (ex: ?token=...)
     return path ? `${base}/${path}${urlObj.search}` : `${base}${urlObj.search}`;
   } catch (err) {
     console.error("[main] buildTargetFromWagoo error:", err, "rawUrl:", rawUrl);
@@ -360,7 +668,6 @@ function handleDeepLink(rawUrl) {
   console.log("[main] handleDeepLink:", rawUrl);
   if (!rawUrl || !rawUrl.startsWith("wagoo://")) return;
 
-  // Si la fenêtre existe, charge directement. Sinon mémorise pour après createWindow.
   const target = buildTargetFromWagoo(rawUrl);
   if (mainWindow) {
     console.log("[main] loading target:", target);
@@ -373,7 +680,6 @@ function handleDeepLink(rawUrl) {
   }
 }
 
-// Auto-update (inchangé, minimal)
 function initAutoUpdater() {
   if (!app.isPackaged) {
     console.log("[AutoUpdater] Ignoré (app non packagée)");
@@ -383,7 +689,6 @@ function initAutoUpdater() {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
 
-  // 🔍 Événements de l'auto-updater
   autoUpdater.on("checking-for-update", () => {
     console.log("[Updater] Vérification...");
     mainWindow?.webContents.send("updater:checking");
@@ -425,11 +730,9 @@ function initAutoUpdater() {
     });
   });
 
-  // ✅ Vérification automatique au démarrage
   autoUpdater.checkForUpdatesAndNotify();
 }
 
-// 📡 Handlers IPC pour le site web
 ipcMain.handle("updater:check", async () => {
   try {
     await autoUpdater.checkForUpdates();
@@ -453,34 +756,28 @@ ipcMain.handle("updater:install", () => {
   return { success: true };
 });
 
-// macOS: open-url (peut arriver avant ready)
 app.on("open-url", (event, url) => {
   event.preventDefault();
   console.log("[main] open-url event:", url);
-  // si l'app est prête et la fenêtre existante, traiter tout de suite
   if (app.isReady() && mainWindow) {
     handleDeepLink(url);
   } else {
-    // sinon mémoriser pour traiter après la création de la fenêtre
     deeplinkingUrl = url;
   }
 });
 
-// Assure single instance (Windows/Linux)
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on("second-instance", (event, argv /*, workingDir */) => {
+  app.on("second-instance", (event, argv) => {
     console.log("[main] second-instance argv:", argv);
-    // argv peut contenir le wagoo:// sur Windows
     const deepLink = argv.find(
       (arg) => typeof arg === "string" && arg.startsWith("wagoo://")
     );
     if (deepLink) {
       handleDeepLink(deepLink);
     }
-    // focus fenêtre existante
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
@@ -488,8 +785,6 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(() => {
-    // En DEV, pour que setAsDefaultProtocolClient fonctionne quand on lance `electron .`,
-    // utiliser ce pattern (process.defaultApp true quand on lance via `electron .`)
     if (process.defaultApp) {
       if (process.argv.length >= 2) {
         app.setAsDefaultProtocolClient("wagoo", process.execPath, [
@@ -500,8 +795,6 @@ if (!gotTheLock) {
       app.setAsDefaultProtocolClient("wagoo");
     }
 
-    // Si l'app a été démarrée AVEC un arg wagoo:// (premier lancement),
-    // il se trouvera dans process.argv (Windows/Linux). On le capture ici.
     if (process.platform === "win32" || process.platform === "linux") {
       const cliDeepLink = process.argv.find(
         (arg) => typeof arg === "string" && arg.startsWith("wagoo://")
@@ -512,30 +805,26 @@ if (!gotTheLock) {
       }
     }
 
-    // crée la fenêtre (elle utilisera deeplinkingUrl si présent)
     createWindow();
-
-    // si on avait mémorisé un deep link, on le traite explicitement après createWindow
+    createTray();
     if (deeplinkingUrl) {
       handleDeepLink(deeplinkingUrl);
       deeplinkingUrl = null;
     }
 
+    // 🚀 Démarrage des services réseau
+    startWebSocketServer();
+    startDiscoveryService();
+
     initAutoUpdater();
   });
 }
 
-// Menu minimal
 function createMenu() {
   const template = [
     {
       label: "Application",
       submenu: [
-        // {
-        //   label: "Ouvrir DevTools",
-        //   accelerator: "F12",
-        //   click: () => mainWindow?.webContents.openDevTools(),
-        // },
         {
           label: "Vérifier les mises à jour",
           click: () => autoUpdater.checkForUpdates(),
@@ -555,7 +844,6 @@ function createMenu() {
                   throw new Error("Site non accessible");
                 }
               } catch (err) {
-                // Site non joignable, afficher le HTML statique
                 const infoWindow = new BrowserWindow({
                   width: 500,
                   height: 400,
@@ -673,7 +961,6 @@ function createMenu() {
             showAboutModal();
           },
         },
-
         { type: "separator" },
         {
           role: "quit",
@@ -687,11 +974,48 @@ function createMenu() {
 }
 
 app.on("window-all-closed", () => {
+  // 🛑 Arrêt des services réseau
+  stopWebSocketServer();
+  stopDiscoveryService();
+
   if (process.platform !== "darwin") app.quit();
 });
+
 app.on("activate", () => {
-  if (!mainWindow) creatcrWindow();
+  if (!mainWindow) createWindow();
+  createTray();
 });
+function createTray() {
+  tray = new Tray(path.join(__dirname, "assets/icon.png")); // votre icône
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: "Ouvrir Wagoo",
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      },
+    },
+    {
+      label: "Quitter",
+      click: () => {
+        app.isQuiting = true; // flag pour autoriser la fermeture réelle
+        app.quit();
+      },
+    },
+  ]);
+  tray.setToolTip("Wagoo Desktop");
+  tray.setContextMenu(contextMenu);
+
+  tray.on("double-click", () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 ipcMain.on("window:minimize", () => mainWindow?.minimize());
 ipcMain.on("window:maximize", () => {
   if (!mainWindow) return;
@@ -702,5 +1026,3 @@ ipcMain.on("window:close", () => mainWindow?.close());
 ipcMain.handle("app:getVersion", () => {
   return app.getVersion();
 });
-
-

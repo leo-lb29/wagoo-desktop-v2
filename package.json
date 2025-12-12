@@ -55,6 +55,7 @@
     ]
   },
   "dependencies": {
+    "bonjour": "^3.5.0",
     "electron-notifications": "^1.0.0",
     "electron-updater": "^6.6.2",
     "ws": "^8.18.3"
