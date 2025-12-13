@@ -61,4 +61,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     platform: process.platform,
     arch: process.arch,
   }),
+  onConnectionStatus: (callback) => {
+    ipcRenderer.on("connection:status", (event, data) => callback(data));
+  },
 });

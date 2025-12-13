@@ -22,9 +22,10 @@ let splashWindow = null;
 let wss = null;
 let discoverySocket = null;
 let wsConnections = new Set();
+let isQuitting = false; // Flag pour gérer la fermeture réelle
 
 // Configuration
-const WS_PORT = 9876; // Port modifié pour éviter les conflits
+const WS_PORT = 9876;
 const DISCOVERY_PORT = 9877;
 const SERVICE_NAME = "wagoo-desktop";
 
@@ -41,7 +42,6 @@ function getLocalIPAddress() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      // Ignore IPv6 et localhost
       if (iface.family === "IPv4" && !iface.internal) {
         return iface.address;
       }
@@ -64,7 +64,6 @@ function startDiscoveryService() {
       `[Discovery] Message reçu de ${rinfo.address}:${rinfo.port} - ${message}`
     );
 
-    // Répondre uniquement aux requêtes de découverte Wagoo
     if (message === "WAGOO_DISCOVERY_REQUEST") {
       const localIP = getLocalIPAddress();
       const response = JSON.stringify({
@@ -119,7 +118,6 @@ function startWebSocketServer() {
     });
   } catch (err) {
     console.error("[WebSocket] Erreur lors du démarrage:", err);
-    // Tenter avec un port alternatif
     try {
       wss = new WebSocket.Server({
         port: WS_PORT + 1,
@@ -145,8 +143,7 @@ function startWebSocketServer() {
     const clientIP = req.socket.remoteAddress;
     console.log(`[WebSocket] Nouvelle connexion depuis ${clientIP}`);
     wsConnections.add(ws);
-
-    // Message de bienvenue
+    sendConnectionStatus();
     ws.send(
       JSON.stringify({
         type: "connected",
@@ -159,7 +156,6 @@ function startWebSocketServer() {
       try {
         const message = JSON.parse(data.toString());
         console.log("[WebSocket] Message reçu:", message);
-
         handleWebSocketMessage(message, ws);
       } catch (err) {
         console.error("[WebSocket] Erreur parsing message:", err);
@@ -169,11 +165,13 @@ function startWebSocketServer() {
     ws.on("close", () => {
       console.log(`[WebSocket] Connexion fermée depuis ${clientIP}`);
       wsConnections.delete(ws);
+          sendConnectionStatus();
     });
 
     ws.on("error", (err) => {
       console.error("[WebSocket] Erreur connexion:", err);
       wsConnections.delete(ws);
+          sendConnectionStatus();
     });
   });
 }
@@ -196,7 +194,6 @@ function handleWebSocketMessage(message, ws) {
 
     default:
       console.log("[WebSocket] Type de message inconnu:", type);
-      // Envoyer au renderer si nécessaire
       if (mainWindow) {
         mainWindow.webContents.send("ws:message", message);
       }
@@ -206,19 +203,16 @@ function handleWebSocketMessage(message, ws) {
 function handleQRScanned(data, ws) {
   console.log("[QR Code] Scanné:", data);
 
-  // Afficher une notification système avec callback
   showNotification(
     "QR Code scanné",
     data.content || "Code détecté",
     data.content
   );
 
-  // Envoyer au renderer (site web)
   if (mainWindow) {
     mainWindow.webContents.send("qr:scanned", data);
   }
 
-  // Confirmer la réception au mobile
   ws.send(
     JSON.stringify({
       type: "qr_received",
@@ -227,7 +221,6 @@ function handleQRScanned(data, ws) {
     })
   );
 
-  // Si le QR contient un deep link Wagoo
   if (data.content && data.content.startsWith("wagoo://")) {
     handleDeepLink(data.content);
   }
@@ -238,15 +231,13 @@ function showNotification(title, body, qrContent = null) {
     const notification = new Notification({
       title: title,
       body: body,
-      icon: path.join(__dirname, "assets/icon.png"), // Ajustez le chemin
+      icon: path.join(__dirname, "assets/logo.png"),
       timeoutType: "default",
     });
 
-    // Gestion du clic sur la notification
     notification.on("click", () => {
       console.log("[Notification] Cliquée");
 
-      // Mettre la fenêtre au premier plan
       if (mainWindow) {
         if (mainWindow.isMinimized()) {
           mainWindow.restore();
@@ -254,27 +245,22 @@ function showNotification(title, body, qrContent = null) {
         mainWindow.show();
         mainWindow.focus();
 
-        // Si le QR contient une URL HTTP/HTTPS, la charger
         if (qrContent) {
           if (
             qrContent.startsWith("http://") ||
             qrContent.startsWith("https://")
           ) {
-            // C'est une URL web classique
             mainWindow.loadURL(qrContent).catch((err) => {
               console.error("[Notification] Erreur chargement URL:", err);
-              // En cas d'erreur, charger la page d'accueil avec le QR en paramètre
               mainWindow.loadURL(
-                `http://localhost:3000?qr=${encodeURIComponent(qrContent)}`
+                `http://localhost:3000/?qr=${encodeURIComponent(qrContent)}`
               );
             });
           } else if (qrContent.startsWith("wagoo://")) {
-            // C'est un deep link Wagoo
             handleDeepLink(qrContent);
           } else {
-            // Autre contenu, envoyer vers la page d'accueil avec le contenu
             mainWindow.loadURL(
-              `http://localhost:3000?qr=${encodeURIComponent(qrContent)}`
+              `http://localhost:3000/?qr=${encodeURIComponent(qrContent)}`
             );
           }
         }
@@ -299,7 +285,6 @@ function stopWebSocketServer() {
   }
 }
 
-// Broadcast un message à tous les clients connectés
 function broadcastToClients(message) {
   wsConnections.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -336,7 +321,99 @@ ipcMain.handle("discovery:getInfo", async () => {
 });
 
 // ========================================
-// RESTE DU CODE (inchangé)
+// TRAY (System Tray Icon)
+// ========================================
+
+function createTray() {
+  // Si le tray existe déjà, ne pas le recréer
+  if (tray) return;
+
+  tray = new Tray(path.join(__dirname, "assets/logo.png"));
+  
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: "Ouvrir Wagoo",
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+          if (mainWindow.isMinimized()) {
+            mainWindow.restore();
+          }
+        } else {
+          createWindow();
+        }
+      },
+    },
+    { type: "separator" },
+    {
+      label: `Version ${app.getVersion()}`,
+      enabled: false,
+    },
+    {
+      label: "À propos",
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+        // Afficher la fenêtre "À propos"
+        showAboutDialog();
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Vérifier les mises à jour",
+      click: () => {
+        autoUpdater.checkForUpdates();
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Quitter",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setToolTip("Wagoo Desktop");
+  tray.setContextMenu(contextMenu);
+
+  // Clic gauche sur l'icône : ouvrir/masquer la fenêtre
+  tray.on("click", () => {
+    if (mainWindow) {
+      if (mainWindow.isVisible()) {
+        mainWindow.hide();
+      } else {
+        mainWindow.show();
+        mainWindow.focus();
+        if (mainWindow.isMinimized()) {
+          mainWindow.restore();
+        }
+      }
+    } else {
+      createWindow();
+    }
+  });
+
+  // Double-clic : toujours afficher
+  tray.on("double-click", () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+    } else {
+      createWindow();
+    }
+  });
+}
+
+// ========================================
+// FENÊTRES
 // ========================================
 
 function createSplash() {
@@ -616,7 +693,7 @@ function createWindow() {
   const loadMainURL = async () => {
     const targetURL = deeplinkingUrl
       ? buildTargetFromWagoo(deeplinkingUrl)
-      : "http://localhost:3000";
+      : "http://localhost:3000/";
 
     try {
       const res = await fetch(targetURL, { method: "HEAD", timeout: 5000 });
@@ -643,9 +720,143 @@ function createWindow() {
     mainWindow.maximize();
   });
 
+  // IMPORTANT: Empêcher la fermeture complète, juste masquer la fenêtre
+  mainWindow.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+      
+      // Afficher une notification pour informer l'utilisateur
+      if (Notification.isSupported()) {
+        new Notification({
+          title: "Wagoo Desktop",
+          body: "L'application continue de fonctionner en arrière-plan. Utilisez l'icône dans la barre des tâches pour la rouvrir.",
+          icon: path.join(__dirname, "assets/logo.png"),
+        }).show();
+      }
+      
+      return false;
+    }
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+function showAboutDialog() {
+  const aboutWindow = new BrowserWindow({
+    width: 500,
+    height: 400,
+    parent: mainWindow,
+    modal: false,
+    resizable: false,
+    frame: false,
+    transparent: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="color-scheme" content="light dark">
+        <title>À propos</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            margin: 0;
+            padding: 30px;
+            background-color: transparent;
+            color: #333;
+            -webkit-app-region: drag;
+          }
+          .container {
+            background: #fff;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            position: relative;
+          }
+          .close-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: #f0f0f0;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            color: #666;
+            -webkit-app-region: no-drag;
+            transition: background 0.2s;
+          }
+          .close-btn:hover {
+            background: #e0e0e0;
+            color: #333;
+          }
+          h1 {
+            margin-top: 0;
+            font-size: 1.8em;
+            -webkit-app-region: no-drag;
+          }
+          p {
+            color: #555;
+            line-height: 1.6;
+            margin: 10px 0;
+            -webkit-app-region: no-drag;
+          }
+
+          @media (prefers-color-scheme: dark) {
+            body {
+              color: #e5e5e5;
+            }
+            .container {
+              background: #1e1e1e;
+              box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            }
+            .close-btn {
+              background: #2a2a2a;
+              color: #999;
+            }
+            .close-btn:hover {
+              background: #3a3a3a;
+              color: #e5e5e5;
+            }
+            p {
+              color: #b0b0b0;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <button class="close-btn" onclick="window.close()">×</button>
+          <h1>À propos de Wagoo Desktop</h1>
+          <p><strong>Version :</strong> ${app.getVersion()}</p>
+          <p><strong>Auteur :</strong> WAGOO SAAS</p>
+          <p><strong>Powered by :</strong> Electron.JS</p>
+          <p style="margin-top: 20px; font-size: 12px; color: #888;">
+            L'application reste active en arrière-plan même après fermeture de la fenêtre.
+          </p>
+        </div>
+      </body>
+    </html>
+  `;
+
+  aboutWindow.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`
+  );
+  aboutWindow.setMenuBarVisibility(false);
 }
 
 function buildTargetFromWagoo(rawUrl) {
@@ -656,11 +867,11 @@ function buildTargetFromWagoo(rawUrl) {
       path += `/${urlObj.hostname}`;
     if (urlObj.pathname && urlObj.pathname !== "/") path += urlObj.pathname;
     path = path.replace(/^\/+/, "");
-    const base = "http://localhost:3000";
+    const base = "http://localhost:3000/";
     return path ? `${base}/${path}${urlObj.search}` : `${base}${urlObj.search}`;
   } catch (err) {
     console.error("[main] buildTargetFromWagoo error:", err, "rawUrl:", rawUrl);
-    return "http://localhost:3000/";
+    return "http://localhost:3000//";
   }
 }
 
@@ -673,12 +884,17 @@ function handleDeepLink(rawUrl) {
     console.log("[main] loading target:", target);
     mainWindow.loadURL(target).catch((e) => console.error(e));
     if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
     mainWindow.focus();
   } else {
     console.log("[main] no window yet, saving deeplink to handle after ready");
     deeplinkingUrl = rawUrl;
   }
 }
+
+// ========================================
+// AUTO-UPDATER
+// ========================================
 
 function initAutoUpdater() {
   if (!app.isPackaged) {
@@ -756,6 +972,10 @@ ipcMain.handle("updater:install", () => {
   return { success: true };
 });
 
+// ========================================
+// APP LIFECYCLE
+// ========================================
+
 app.on("open-url", (event, url) => {
   event.preventDefault();
   console.log("[main] open-url event:", url);
@@ -780,6 +1000,7 @@ if (!gotTheLock) {
     }
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
       mainWindow.focus();
     }
   });
@@ -805,14 +1026,16 @@ if (!gotTheLock) {
       }
     }
 
-    createWindow();
+    // Créer le tray AVANT la fenêtre pour qu'il soit toujours présent
     createTray();
+    createWindow();
+    
     if (deeplinkingUrl) {
       handleDeepLink(deeplinkingUrl);
       deeplinkingUrl = null;
     }
 
-    // 🚀 Démarrage des services réseau
+    // Démarrage des services réseau
     startWebSocketServer();
     startDiscoveryService();
 
@@ -831,140 +1054,16 @@ function createMenu() {
         },
         {
           label: "Afficher les informations de l'application",
-          click: () => {
-            const showAboutModal = async () => {
-              try {
-                const res = await fetch("http://localhost:3000/version", {
-                  method: "HEAD",
-                  timeout: 5000,
-                });
-                if (res.ok) {
-                  mainWindow.loadURL("http://localhost:3000/version");
-                } else {
-                  throw new Error("Site non accessible");
-                }
-              } catch (err) {
-                const infoWindow = new BrowserWindow({
-                  width: 500,
-                  height: 400,
-                  parent: mainWindow,
-                  modal: true,
-                  resizable: false,
-                  frame: false,
-                  transparent: true,
-                  webPreferences: {
-                    nodeIntegration: false,
-                    contextIsolation: true,
-                  },
-                });
-
-                const htmlContent = `
-                <!DOCTYPE html>
-                <html lang="fr">
-                  <head>
-                    <meta charset="UTF-8">
-                    <meta name="color-scheme" content="light dark">
-                    <title>À propos</title>
-                    <style>
-                      body {
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                        margin: 0;
-                        padding: 30px;
-                        background-color: transparent;
-                        color: #333;
-                        -webkit-app-region: drag;
-                      }
-                      .container {
-                        background: #fff;
-                        padding: 30px;
-                        border-radius: 10px;
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-                        position: relative;
-                      }
-                      .close-btn {
-                        position: absolute;
-                        top: 15px;
-                        right: 15px;
-                        width: 30px;
-                        height: 30px;
-                        border-radius: 50%;
-                        background: #f0f0f0;
-                        border: none;
-                        cursor: pointer;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        font-size: 18px;
-                        color: #666;
-                        -webkit-app-region: no-drag;
-                        transition: background 0.2s;
-                      }
-                      .close-btn:hover {
-                        background: #e0e0e0;
-                        color: #333;
-                      }
-                      h1 {
-                        margin-top: 0;
-                        font-size: 1.8em;
-                        -webkit-app-region: no-drag;
-                      }
-                      p {
-                        color: #555;
-                        line-height: 1.6;
-                        margin: 10px 0;
-                        -webkit-app-region: no-drag;
-                      }
-
-                      @media (prefers-color-scheme: dark) {
-                        body {
-                          color: #e5e5e5;
-                        }
-                        .container {
-                          background: #1e1e1e;
-                          box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-                        }
-                        .close-btn {
-                          background: #2a2a2a;
-                          color: #999;
-                        }
-                        .close-btn:hover {
-                          background: #3a3a3a;
-                          color: #e5e5e5;
-                        }
-                        p {
-                          color: #b0b0b0;
-                        }
-                      }
-                    </style>
-                  </head>
-                  <body>
-                    <div class="container">
-                      <button class="close-btn" onclick="window.close()">×</button>
-                      <h1>À propos de l'application</h1>
-                      <p><strong>Version :</strong> ${app.getVersion()}</p>
-                      <p><strong>Auteur :</strong> WAGOO SAAS</p>
-                      <p><strong>POWERED By :</strong> Electron.JS</p>
-                    </div>
-                  </body>
-                </html>
-              `;
-
-                infoWindow.loadURL(
-                  `data:text/html;charset=utf-8,${encodeURIComponent(
-                    htmlContent
-                  )}`
-                );
-                infoWindow.setMenuBarVisibility(false);
-              }
-            };
-
-            showAboutModal();
-          },
+          click: () => showAboutDialog(),
         },
         { type: "separator" },
         {
           role: "quit",
           label: "Quitter",
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
         },
       ],
     },
@@ -974,54 +1073,59 @@ function createMenu() {
 }
 
 app.on("window-all-closed", () => {
-  // 🛑 Arrêt des services réseau
-  stopWebSocketServer();
-  stopDiscoveryService();
-
-  if (process.platform !== "darwin") app.quit();
+  // Ne PAS quitter l'app quand toutes les fenêtres sont fermées
+  // L'app continue en arrière-plan avec le tray
+  console.log("[App] Toutes les fenêtres fermées, l'app reste en arrière-plan");
 });
 
 app.on("activate", () => {
-  if (!mainWindow) createWindow();
-  createTray();
+  // Sur macOS, recréer la fenêtre si elle n'existe pas
+  if (!mainWindow) {
+    createWindow();
+  } else {
+    mainWindow.show();
+  }
 });
-function createTray() {
-  tray = new Tray(path.join(__dirname, "assets/icon.png")); // votre icône
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: "Ouvrir Wagoo",
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
-      },
-    },
-    {
-      label: "Quitter",
-      click: () => {
-        app.isQuiting = true; // flag pour autoriser la fermeture réelle
-        app.quit();
-      },
-    },
-  ]);
-  tray.setToolTip("Wagoo Desktop");
-  tray.setContextMenu(contextMenu);
 
-  tray.on("double-click", () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-}
+app.on("before-quit", () => {
+  // Arrêter les services réseau avant de quitter
+  isQuitting = true;
+  stopWebSocketServer();
+  stopDiscoveryService();
+});
+
+// ========================================
+// IPC HANDLERS
+// ========================================
 
 ipcMain.on("window:minimize", () => mainWindow?.minimize());
 ipcMain.on("window:maximize", () => {
   if (!mainWindow) return;
   mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
 });
-ipcMain.on("window:close", () => mainWindow?.close());
+ipcMain.on("window:close", () => {
+  // Ne pas fermer complètement, juste masquer
+  if (mainWindow) {
+    mainWindow.hide();
+  }
+});
+
+function sendConnectionStatus() {
+  const status = {
+    devices: Array.from(wsConnections).map((ws) => ({
+      ip: ws._socket.remoteAddress,
+      port: ws._socket.remotePort,
+      platform: "unknown",
+    })),
+  };
+
+  // Envoi via IPC
+  if (mainWindow) {
+    mainWindow.webContents.send("connection:status", status);
+  }
+}
+
+
 
 ipcMain.handle("app:getVersion", () => {
   return app.getVersion();
