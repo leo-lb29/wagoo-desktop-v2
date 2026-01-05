@@ -3,9 +3,9 @@ description: Description du projet
 version:
   major: 0
   minor: 0
-  patch: 1
+  patch: 2
   name_version: ""
-  note_version: Updated to v0.0.1
+  note_version: Updated to v0.0.2
 links:
   - name: Frontend
     url: http://localhost:3000
