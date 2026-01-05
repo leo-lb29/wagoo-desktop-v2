@@ -18,7 +18,6 @@ const os = require("os");
 let tray = null;
 let mainWindow = null;
 let deeplinkingUrl = null;
-let splashWindow = null;
 let wss = null;
 let discoverySocket = null;
 let wsConnections = new Set();
@@ -28,6 +27,16 @@ let isQuitting = false; // Flag pour gérer la fermeture réelle
 const WS_PORT = 9876;
 const DISCOVERY_PORT = 9877;
 const SERVICE_NAME = "wagoo-desktop";
+
+// Config centralisée dev/prod
+const CONFIG = (() => {
+  const isDev = !app.isPackaged;
+  return {
+    isDev,
+    baseURL: isDev ? "http://localhost:3000" : "https://dashtest.wagoo.app",
+    wsURL: isDev ? "ws://localhost:" + WS_PORT : "wss://dashtest.wagoo.app",
+  };
+})();
 
 if (process.platform === "linux") {
   app.commandLine.appendSwitch("enable-features", "UseOzonePlatform");
@@ -165,13 +174,13 @@ function startWebSocketServer() {
     ws.on("close", () => {
       console.log(`[WebSocket] Connexion fermée depuis ${clientIP}`);
       wsConnections.delete(ws);
-          sendConnectionStatus();
+      sendConnectionStatus();
     });
 
     ws.on("error", (err) => {
       console.error("[WebSocket] Erreur connexion:", err);
       wsConnections.delete(ws);
-          sendConnectionStatus();
+      sendConnectionStatus();
     });
   });
 }
@@ -202,12 +211,6 @@ function handleWebSocketMessage(message, ws) {
 
 function handleQRScanned(data, ws) {
   console.log("[QR Code] Scanné:", data);
-
-  showNotification(
-    "QR Code scanné",
-    data.content || "Code détecté",
-    data.content
-  );
 
   if (mainWindow) {
     mainWindow.webContents.send("qr:scanned", data);
@@ -253,14 +256,14 @@ function showNotification(title, body, qrContent = null) {
             mainWindow.loadURL(qrContent).catch((err) => {
               console.error("[Notification] Erreur chargement URL:", err);
               mainWindow.loadURL(
-                `http://localhost:3000/?qr=${encodeURIComponent(qrContent)}`
+                `${CONFIG.baseURL}/?qr=${encodeURIComponent(qrContent)}`
               );
             });
           } else if (qrContent.startsWith("wagoo://")) {
             handleDeepLink(qrContent);
           } else {
             mainWindow.loadURL(
-              `http://localhost:3000/?qr=${encodeURIComponent(qrContent)}`
+              `${CONFIG.baseURL}/?qr=${encodeURIComponent(qrContent)}`
             );
           }
         }
@@ -329,7 +332,7 @@ function createTray() {
   if (tray) return;
 
   tray = new Tray(path.join(__dirname, "assets/logo.png"));
-  
+
   const contextMenu = Menu.buildFromTemplate([
     {
       label: "Ouvrir Wagoo",
@@ -415,138 +418,6 @@ function createTray() {
 // ========================================
 // FENÊTRES
 // ========================================
-
-function createSplash() {
-  splashWindow = new BrowserWindow({
-    width: 320,
-    height: 280,
-    transparent: true,
-    frame: false,
-    alwaysOnTop: true,
-    resizable: false,
-    center: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
-
-  const splashHTML = `
-  <!DOCTYPE html>
-  <html lang="fr">
-    <head>
-      <meta charset="UTF-8" />
-      <meta name="color-scheme" content="light dark">
-      <style>
-        @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;600;800&display=swap');
-
-        body {
-          margin: 0;
-          height: 100vh;
-          display: flex;
-          justify-content: center;
-          shadow: none;
-          align-items: center;
-          font-family: 'Baloo 2', sans-serif;
-          background: transparent;
-        }
-
-        .card {
-          background: #fff;
-          border-radius: 16px;
-          padding: 40px;
-          text-align: center;
-          shadow: none;
-          width: 320px;
-          animation: fadeIn 0.4s ease-out;
-        }
-
-        @keyframes fadeIn {
-          from { opacity: 0; transform: scale(0.95); }
-          to { opacity: 1; transform: scale(1); }
-        }
-
-        .logo {
-          font-size: 36px;
-          font-weight: 800;
-          color: #7c3aed;
-          margin-bottom: 20px;
-        }
-
-        .loader {
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          gap: 8px;
-          margin-bottom: 16px;
-        }
-
-        .dot {
-          width: 10px;
-          height: 10px;
-          background: #7c3aed;
-          border-radius: 50%;
-          animation: bounce 0.6s infinite alternate;
-        }
-
-        .dot:nth-child(2) { animation-delay: 0.2s; }
-        .dot:nth-child(3) { animation-delay: 0.4s; }
-
-        @keyframes bounce {
-          from { transform: translateY(0); opacity: 0.5; }
-          to { transform: translateY(-12px); opacity: 1; }
-        }
-
-        .text {
-          font-weight: 500;
-          color: #333;
-        }
-
-        @media (prefers-color-scheme: dark) {
-          .card {
-            background: #1e1e1e;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-          }
-
-          .logo {
-            color: #a78bfa;
-          }
-
-          .dot {
-            background: #a78bfa;
-          }
-
-          .text {
-            color: #e5e5e5;
-          }
-
-          .version {
-            color: #666 !important;
-          }
-        }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <div class="logo">Wagoo</div>
-        <div class="loader">
-          <div class="dot"></div>
-          <div class="dot"></div>
-          <div class="dot"></div>
-        </div>
-    
-        <div class="version" style="margin-top: 12px; font-size: 12px; color: #999;">Sakura-${app.getVersion()}</div>
-      </div>
-    </body>
-  </html>
-  `;
-
-  splashWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(splashHTML)}`
-  );
-
-  splashWindow.show();
-}
 
 function showOfflineWindow() {
   const offlineWindow = new BrowserWindow({
@@ -669,8 +540,6 @@ function showOfflineWindow() {
 }
 
 function createWindow() {
-  createSplash();
-
   const wagooSession = session.fromPartition("persist:wagoo-session");
 
   mainWindow = new BrowserWindow({
@@ -685,15 +554,15 @@ function createWindow() {
       sandbox: true,
       session: wagooSession,
       preload: path.join(__dirname, "preload.js"),
-      devTools: false,
+      devTools: CONFIG.isDev,
     },
-    show: false,
+    show: false, // Démarrer caché
   });
 
   const loadMainURL = async () => {
     const targetURL = deeplinkingUrl
       ? buildTargetFromWagoo(deeplinkingUrl)
-      : "http://localhost:3000/";
+      : CONFIG.baseURL;
 
     try {
       const res = await fetch(targetURL, { method: "HEAD", timeout: 5000 });
@@ -702,7 +571,6 @@ function createWindow() {
       mainWindow.loadURL(targetURL);
     } catch (err) {
       console.error("[main] Site non joignable :", err);
-      if (splashWindow) splashWindow.close();
       if (mainWindow) mainWindow.close();
 
       showOfflineWindow();
@@ -712,12 +580,10 @@ function createWindow() {
   loadMainURL();
 
   mainWindow.webContents.on("did-finish-load", () => {
-    if (splashWindow) {
-      splashWindow.close();
-      splashWindow = null;
-    }
+    // Afficher la fenêtre au démarrage
     mainWindow.show();
     mainWindow.maximize();
+    console.log("[App] Fenêtre affichée au démarrage");
   });
 
   // IMPORTANT: Empêcher la fermeture complète, juste masquer la fenêtre
@@ -725,7 +591,7 @@ function createWindow() {
     if (!isQuitting) {
       event.preventDefault();
       mainWindow.hide();
-      
+
       // Afficher une notification pour informer l'utilisateur
       if (Notification.isSupported()) {
         new Notification({
@@ -734,7 +600,7 @@ function createWindow() {
           icon: path.join(__dirname, "assets/logo.png"),
         }).show();
       }
-      
+
       return false;
     }
   });
@@ -867,11 +733,11 @@ function buildTargetFromWagoo(rawUrl) {
       path += `/${urlObj.hostname}`;
     if (urlObj.pathname && urlObj.pathname !== "/") path += urlObj.pathname;
     path = path.replace(/^\/+/, "");
-    const base = "http://localhost:3000/";
-    return path ? `${base}/${path}${urlObj.search}` : `${base}${urlObj.search}`;
+    const base = CONFIG.baseURL + "/";
+    return path ? `${base}${path}${urlObj.search}` : `${base}${urlObj.search}`;
   } catch (err) {
     console.error("[main] buildTargetFromWagoo error:", err, "rawUrl:", rawUrl);
-    return "http://localhost:3000//";
+    return CONFIG.baseURL + "/";
   }
 }
 
@@ -1016,6 +882,13 @@ if (!gotTheLock) {
       app.setAsDefaultProtocolClient("wagoo");
     }
 
+    // Configurer le démarrage automatique au démarrage du PC
+    app.setLoginItemSettings({
+      openAtLogin: true,
+      openAsHidden: true, // Démarrer caché en arrière-plan
+      path: app.getPath("exe"),
+    });
+
     if (process.platform === "win32" || process.platform === "linux") {
       const cliDeepLink = process.argv.find(
         (arg) => typeof arg === "string" && arg.startsWith("wagoo://")
@@ -1029,7 +902,7 @@ if (!gotTheLock) {
     // Créer le tray AVANT la fenêtre pour qu'il soit toujours présent
     createTray();
     createWindow();
-    
+
     if (deeplinkingUrl) {
       handleDeepLink(deeplinkingUrl);
       deeplinkingUrl = null;
@@ -1101,7 +974,10 @@ app.on("before-quit", () => {
 ipcMain.on("window:minimize", () => mainWindow?.minimize());
 ipcMain.on("window:maximize", () => {
   if (!mainWindow) return;
-  mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+  // Cross-platform: vérifier si maximizable avant d'appeler maximize
+  if (process.platform !== "darwin" || mainWindow.isMaximizable()) {
+    mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+  }
 });
 ipcMain.on("window:close", () => {
   // Ne pas fermer complètement, juste masquer
@@ -1124,8 +1000,6 @@ function sendConnectionStatus() {
     mainWindow.webContents.send("connection:status", status);
   }
 }
-
-
 
 ipcMain.handle("app:getVersion", () => {
   return app.getVersion();
