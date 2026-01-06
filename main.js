@@ -1,4 +1,24 @@
-// main.js
+require("dotenv").config();
+
+// Configuration fallback si .env manquant (production)
+if (!process.env.PROD_BASE_URL) {
+  console.warn("[INIT] Variables d'environnement manquantes, utilisation fallback");
+  process.env.PROD_BASE_URL = "https://dashtest.wagoo.app/dashboard";
+  process.env.DEV_BASE_URL = "http://localhost:3000/dashboard";
+  process.env.DEV_WS_URL = "ws://localhost:9876";
+  process.env.PROD_WS_URL = "wss://dashtest.wagoo.app";
+  process.env.WS_PORT = "9876";
+  process.env.DISCOVERY_PORT = "9877";
+  process.env.SERVICE_NAME = "wagoo-desktop";
+  process.env.WS_MAX_CONNECTIONS = "100";
+  process.env.WS_RATE_LIMIT_WINDOW_MS = "60000";
+  process.env.WS_RATE_LIMIT_MAX_MESSAGES = "100";
+  process.env.FETCH_TIMEOUT = "5000";
+  process.env.WS_HEARTBEAT_INTERVAL = "30000";
+  process.env.WS_CONNECTION_TIMEOUT = "10000";
+  process.env.LOG_LEVEL = "info";
+  process.env.WS_LOCALHOST_ONLY = "true";
+}
 const {
   app,
   BrowserWindow,
@@ -8,45 +28,111 @@ const {
   Menu,
   ipcMain,
   Notification,
+  nativeTheme,
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const dgram = require("dgram");
 const WebSocket = require("ws");
 const os = require("os");
+const fs = require("fs");
+
+// Charger le logger avec fallback robuste
+let initLogger, createModuleLogger;
+try {
+  ({ initLogger, createModuleLogger } = require("./logger"));
+} catch (err) {
+  console.error("[INIT] Erreur chargement logger.js, utilisation fallback", err.message);
+  // Fallback logger si fichier manquant en production
+  const log = require("electron-log");
+  initLogger = (dir) => {
+    log.transports.file.file = path.join(dir, "wagoo-desktop.log");
+    return log;
+  };
+  createModuleLogger = (name) => ({
+    debug: (msg) => log.debug(`[${name}] ${msg}`),
+    info: (msg) => log.info(`[${name}] ${msg}`),
+    warn: (msg) => log.warn(`[${name}] ${msg}`),
+    error: (msg) => log.error(`[${name}] ${msg}`),
+  });
+}
+
+// Initialiser le logger
+const logDir = app.getPath("logs");
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+initLogger(logDir);
+const logger = createModuleLogger("MAIN");
 
 let tray = null;
 let mainWindow = null;
 let deeplinkingUrl = null;
 let wss = null;
 let discoverySocket = null;
-let wsConnections = new Set();
-let isQuitting = false; // Flag pour gérer la fermeture réelle
+let wsConnections = new Map(); // Map au lieu de Set pour meilleure gestion
+let isQuitting = false;
+let wsHeartbeatIntervals = new Map();
 
-// Configuration
-const WS_PORT = 9876;
-const DISCOVERY_PORT = 9877;
-const SERVICE_NAME = "wagoo-desktop";
-
-// Config centralisée dev/prod
+/**
+ * Configuration centralisée dev/prod depuis les variables d'environnement
+ */
 const CONFIG = (() => {
   const isDev = !app.isPackaged;
   return {
     isDev,
-    baseURL: isDev ? "http://localhost:3000/dashboard" : "https://dashtest.wagoo.app/dashboard",
-    wsURL: isDev ? "ws://localhost:" + WS_PORT : "wss://dashtest.wagoo.app",
+    baseURL: isDev 
+      ? process.env.DEV_BASE_URL 
+      : process.env.PROD_BASE_URL,
+    wsURL: isDev 
+      ? process.env.DEV_WS_URL 
+      : process.env.PROD_WS_URL,
+    wsPort: parseInt(process.env.WS_PORT) || 9876,
+    discoveryPort: parseInt(process.env.DISCOVERY_PORT) || 9877,
+    serviceName: process.env.SERVICE_NAME || "wagoo-desktop",
+    maxConnections: parseInt(process.env.WS_MAX_CONNECTIONS) || 100,
+    rateLimitWindow: parseInt(process.env.WS_RATE_LIMIT_WINDOW_MS) || 60000,
+    rateLimitMax: parseInt(process.env.WS_RATE_LIMIT_MAX_MESSAGES) || 100,
+    fetchTimeout: parseInt(process.env.FETCH_TIMEOUT) || 5000,
+    wsHeartbeat: parseInt(process.env.WS_HEARTBEAT_INTERVAL) || 30000,
+    wsConnectionTimeout: parseInt(process.env.WS_CONNECTION_TIMEOUT) || 10000,
+    localhostOnly: process.env.WS_LOCALHOST_ONLY !== "false",
   };
 })();
+
+logger.info(`Configuration chargée [isDev=${CONFIG.isDev}]`);
 
 if (process.platform === "linux") {
   app.commandLine.appendSwitch("enable-features", "UseOzonePlatform");
   app.commandLine.appendSwitch("ozone-platform", "wayland");
 }
 
-// ========================================
-// DÉCOUVERTE RÉSEAU (UDP Broadcast)
-// ========================================
+/**
+ * Utilitaire pour faire un fetch avec timeout
+ * @param {string} url - URL à charger
+ * @param {object} options - Options fetch
+ * @param {number} timeout - Timeout en millisecondes
+ * @returns {Promise} Réponse fetch
+ */
+async function fetchWithTimeout(url, options = {}, timeout = CONFIG.fetchTimeout) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
 
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Retourne l'adresse IP locale pour le service de découverte
+ * @returns {string} Adresse IPv4 locale
+ */
 function getLocalIPAddress() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
@@ -59,59 +145,73 @@ function getLocalIPAddress() {
   return "127.0.0.1";
 }
 
+/**
+ * Démarre le service de découverte UDP
+ */
 function startDiscoveryService() {
-  discoverySocket = dgram.createSocket("udp4");
+  try {
+    discoverySocket = dgram.createSocket("udp4");
 
-  discoverySocket.on("error", (err) => {
-    console.error("[Discovery] Erreur:", err);
-    discoverySocket.close();
-  });
+    discoverySocket.on("error", (err) => {
+      logger.error("Erreur découverte:", err);
+      discoverySocket.close();
+    });
 
-  discoverySocket.on("message", (msg, rinfo) => {
-    const message = msg.toString();
-    console.log(
-      `[Discovery] Message reçu de ${rinfo.address}:${rinfo.port} - ${message}`
-    );
+    discoverySocket.on("message", (msg, rinfo) => {
+      try {
+        const message = msg.toString();
+        logger.debug(`Message reçu de ${rinfo.address}:${rinfo.port}`);
 
-    if (message === "WAGOO_DISCOVERY_REQUEST") {
-      const localIP = getLocalIPAddress();
-      const response = JSON.stringify({
-        service: SERVICE_NAME,
-        ip: localIP,
-        wsPort: WS_PORT,
-        hostname: os.hostname(),
-        version: app.getVersion(),
-        platform: process.platform,
-      });
+        if (message === "WAGOO_DISCOVERY_REQUEST") {
+          const localIP = getLocalIPAddress();
+          const response = JSON.stringify({
+            service: CONFIG.serviceName,
+            ip: localIP,
+            wsPort: CONFIG.wsPort,
+            hostname: os.hostname(),
+            version: app.getVersion(),
+            platform: process.platform,
+          });
 
-      discoverySocket.send(response, rinfo.port, rinfo.address, (err) => {
-        if (err) {
-          console.error("[Discovery] Erreur envoi réponse:", err);
-        } else {
-          console.log(
-            `[Discovery] Réponse envoyée à ${rinfo.address}:${rinfo.port}`
-          );
+          discoverySocket.send(response, rinfo.port, rinfo.address, (err) => {
+            if (err) {
+              logger.error("Erreur envoi réponse découverte:", err);
+            } else {
+              logger.debug(`Réponse envoyée à ${rinfo.address}:${rinfo.port}`);
+            }
+          });
         }
-      });
-    }
-  });
+      } catch (err) {
+        logger.error("Erreur traitement message découverte:", err);
+      }
+    });
 
-  discoverySocket.on("listening", () => {
-    const address = discoverySocket.address();
-    console.log(
-      `[Discovery] Service d'écoute sur ${address.address}:${address.port}`
-    );
-    discoverySocket.setBroadcast(true);
-  });
+    discoverySocket.on("listening", () => {
+      const address = discoverySocket.address();
+      logger.info(
+        `Service découverte en écoute sur ${address.address}:${address.port}`
+      );
+      discoverySocket.setBroadcast(true);
+    });
 
-  discoverySocket.bind(DISCOVERY_PORT);
+    discoverySocket.bind(CONFIG.discoveryPort);
+  } catch (err) {
+    logger.error("Impossible démarrer service découverte:", err);
+  }
 }
 
+/**
+ * Arrête le service de découverte UDP
+ */
 function stopDiscoveryService() {
   if (discoverySocket) {
-    discoverySocket.close();
-    discoverySocket = null;
-    console.log("[Discovery] Service arrêté");
+    try {
+      discoverySocket.close();
+      discoverySocket = null;
+      logger.info("Service découverte arrêté");
+    } catch (err) {
+      logger.error("Erreur arrêt service découverte:", err);
+    }
   }
 }
 
@@ -119,72 +219,170 @@ function stopDiscoveryService() {
 // SERVEUR WEBSOCKET
 // ========================================
 
+/**
+ * Valide un message WebSocket pour la sécurité
+ * @param {object} message - Message à valider
+ * @returns {boolean} Message valide ou non
+ */
+function validateWSMessage(message) {
+  if (!message || typeof message !== "object") return false;
+  if (!message.type || typeof message.type !== "string") return false;
+  if (message.type.length > 50) return false; // Limite raisonnable
+  return true;
+}
+
+/**
+ * Démarre le serveur WebSocket avec gestion d'erreurs et limites
+ */
 function startWebSocketServer() {
   try {
+    const wsHost = CONFIG.localhostOnly ? "127.0.0.1" : "0.0.0.0";
+    
     wss = new WebSocket.Server({
-      port: WS_PORT,
-      host: "0.0.0.0",
+      port: CONFIG.wsPort,
+      host: wsHost,
+      clientTracking: true,
+      maxPayload: 100 * 1024, // 100KB max
     });
+
+    logger.info(`WebSocket serveur configuré en écoute sur ${wsHost}:${CONFIG.wsPort}`);
   } catch (err) {
-    console.error("[WebSocket] Erreur lors du démarrage:", err);
+    logger.error("Erreur démarrage WebSocket principal:", err);
+    // Essayer port alternatif
     try {
+      const altPort = CONFIG.wsPort + 1;
       wss = new WebSocket.Server({
-        port: WS_PORT + 1,
-        host: "0.0.0.0",
+        port: altPort,
+        host: CONFIG.localhostOnly ? "127.0.0.1" : "0.0.0.0",
+        maxPayload: 100 * 1024,
       });
-      console.log(`[WebSocket] Démarré sur le port alternatif ${WS_PORT + 1}`);
+      logger.warn(`WebSocket démarré sur port alternatif ${altPort}`);
     } catch (err2) {
-      console.error("[WebSocket] Impossible de démarrer le serveur:", err2);
+      logger.error("Impossible démarrer WebSocket (port alternatif aussi):", err2);
       return;
     }
   }
 
   wss.on("error", (err) => {
-    console.error("[WebSocket] Erreur serveur:", err);
-  });
-
-  wss.on("listening", () => {
-    const localIP = getLocalIPAddress();
-    console.log(`[WebSocket] Serveur démarré sur ws://${localIP}:${WS_PORT}`);
+    logger.error("Erreur serveur WebSocket:", err);
   });
 
   wss.on("connection", (ws, req) => {
-    const clientIP = req.socket.remoteAddress;
-    console.log(`[WebSocket] Nouvelle connexion depuis ${clientIP}`);
-    wsConnections.add(ws);
-    sendConnectionStatus();
-    ws.send(
-      JSON.stringify({
-        type: "connected",
-        message: "Connecté à Wagoo Desktop",
-        version: app.getVersion(),
-      })
-    );
-
-    ws.on("message", (data) => {
-      try {
-        const message = JSON.parse(data.toString());
-        console.log("[WebSocket] Message reçu:", message);
-        handleWebSocketMessage(message, ws);
-      } catch (err) {
-        console.error("[WebSocket] Erreur parsing message:", err);
+    try {
+      // Vérifier limite de connexions
+      if (wsConnections.size >= CONFIG.maxConnections) {
+        logger.warn(`Limite connexions atteinte (${CONFIG.maxConnections})`);
+        ws.close(1008, "Serveur plein");
+        return;
       }
-    });
 
-    ws.on("close", () => {
-      console.log(`[WebSocket] Connexion fermée depuis ${clientIP}`);
-      wsConnections.delete(ws);
-      sendConnectionStatus();
-    });
+      const clientIP = req.socket.remoteAddress;
+      const wsId = `${clientIP}-${Date.now()}`;
 
-    ws.on("error", (err) => {
-      console.error("[WebSocket] Erreur connexion:", err);
-      wsConnections.delete(ws);
+      logger.info(`Nouvelle connexion WebSocket depuis ${clientIP}`);
+      
+      // Initialiser rate limiting
+      const clientData = {
+        ip: clientIP,
+        messageCount: 0,
+        windowStart: Date.now(),
+      };
+
+      wsConnections.set(wsId, { ws, clientData });
       sendConnectionStatus();
-    });
+
+      // Envoi message bienvenue
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "connected",
+            message: "Connecté à Wagoo Desktop",
+            version: app.getVersion(),
+          })
+        );
+      } catch (err) {
+        logger.error("Erreur envoi message connexion:", err);
+      }
+
+      // Heartbeat pour maintenir la connexion
+      const heartbeatInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.ping();
+          } catch (err) {
+            logger.debug("Erreur ping heartbeat:", err);
+          }
+        }
+      }, CONFIG.wsHeartbeat);
+
+      wsHeartbeatIntervals.set(wsId, heartbeatInterval);
+
+      ws.on("message", (data) => {
+        try {
+          // Rate limiting
+          clientData.messageCount++;
+          const now = Date.now();
+          if (now - clientData.windowStart > CONFIG.rateLimitWindow) {
+            clientData.messageCount = 1;
+            clientData.windowStart = now;
+          }
+
+          if (clientData.messageCount > CONFIG.rateLimitMax) {
+            logger.warn(`Rate limit dépassé pour ${clientIP}`);
+            ws.close(1008, "Rate limit exceeded");
+            return;
+          }
+
+          // Valider et traiter message
+          const message = JSON.parse(data.toString());
+          if (!validateWSMessage(message)) {
+            logger.warn(`Message invalide reçu de ${clientIP}`);
+            return;
+          }
+
+          handleWebSocketMessage(message, ws);
+        } catch (err) {
+          logger.error("Erreur traitement message WebSocket:", err);
+        }
+      });
+
+      ws.on("close", () => {
+        logger.info(`Connexion fermée depuis ${clientIP}`);
+        wsConnections.delete(wsId);
+        
+        const interval = wsHeartbeatIntervals.get(wsId);
+        if (interval) {
+          clearInterval(interval);
+          wsHeartbeatIntervals.delete(wsId);
+        }
+
+        sendConnectionStatus();
+      });
+
+      ws.on("error", (err) => {
+        logger.error("Erreur connexion WebSocket:", err);
+        wsConnections.delete(wsId);
+        
+        const interval = wsHeartbeatIntervals.get(wsId);
+        if (interval) {
+          clearInterval(interval);
+          wsHeartbeatIntervals.delete(wsId);
+        }
+
+        sendConnectionStatus();
+      });
+    } catch (err) {
+      logger.error("Erreur dans handler connexion:", err);
+      ws.close(1011, "Erreur interne");
+    }
   });
 }
 
+/**
+ * Gère les messages WebSocket entrants
+ * @param {object} message - Message à traiter
+ * @param {WebSocket} ws - Connection WebSocket
+ */
 function handleWebSocketMessage(message, ws) {
   const { type, data } = message;
 
@@ -194,52 +392,78 @@ function handleWebSocketMessage(message, ws) {
       break;
 
     case "ping":
-      ws.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
+      try {
+        ws.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
+      } catch (err) {
+        logger.error("Erreur envoi pong:", err);
+      }
       break;
 
     case "notification":
-      showNotification(data.title, data.body);
+      if (data && data.title && data.body) {
+        showNotification(data.title, data.body);
+      }
       break;
 
     default:
-      console.log("[WebSocket] Type de message inconnu:", type);
+      logger.debug(`Type message inconnu: ${type}`);
       if (mainWindow) {
         mainWindow.webContents.send("ws:message", message);
       }
   }
 }
 
+/**
+ * Traite un QR code scanné
+ * @param {object} data - Données QR
+ * @param {WebSocket} ws - Connection WebSocket
+ */
 function handleQRScanned(data, ws) {
-  console.log("[QR Code] Scanné:", data);
+  try {
+    logger.info("QR code scanné");
 
-  if (mainWindow) {
-    mainWindow.webContents.send("qr:scanned", data);
-  }
+    if (mainWindow) {
+      mainWindow.webContents.send("qr:scanned", data);
+    }
 
-  ws.send(
-    JSON.stringify({
-      type: "qr_received",
-      success: true,
-      timestamp: Date.now(),
-    })
-  );
+    ws.send(
+      JSON.stringify({
+        type: "qr_received",
+        success: true,
+        timestamp: Date.now(),
+      })
+    );
 
-  if (data.content && data.content.startsWith("wagoo://")) {
-    handleDeepLink(data.content);
+    if (data && data.content && data.content.startsWith("wagoo://")) {
+      handleDeepLink(data.content);
+    }
+  } catch (err) {
+    logger.error("Erreur traitement QR scanné:", err);
   }
 }
 
+/**
+ * Affiche une notification système
+ * @param {string} title - Titre notification
+ * @param {string} body - Corps notification
+ * @param {string} qrContent - Contenu QR optionnel
+ */
 function showNotification(title, body, qrContent = null) {
-  if (Notification.isSupported()) {
+  try {
+    if (!Notification.isSupported()) {
+      logger.warn("Notifications non supportées");
+      return;
+    }
+
     const notification = new Notification({
-      title: title,
-      body: body,
-      icon: path.join(__dirname, "assets/logo.png"),
+      title: title || "Wagoo",
+      body: body || "",
+      icon: getIconPath("logo.png"),
       timeoutType: "default",
     });
 
     notification.on("click", () => {
-      console.log("[Notification] Cliquée");
+      logger.debug("Notification cliquée");
 
       if (mainWindow) {
         if (mainWindow.isMinimized()) {
@@ -249,49 +473,90 @@ function showNotification(title, body, qrContent = null) {
         mainWindow.focus();
 
         if (qrContent) {
-          if (
-            qrContent.startsWith("http://") ||
-            qrContent.startsWith("https://")
-          ) {
-            mainWindow.loadURL(qrContent).catch((err) => {
-              console.error("[Notification] Erreur chargement URL:", err);
-              mainWindow.loadURL(
-                `${CONFIG.baseURL}/?qr=${encodeURIComponent(qrContent)}`
-              );
-            });
-          } else if (qrContent.startsWith("wagoo://")) {
-            handleDeepLink(qrContent);
-          } else {
-            mainWindow.loadURL(
-              `${CONFIG.baseURL}/?qr=${encodeURIComponent(qrContent)}`
-            );
-          }
+          handleNotificationClick(qrContent);
         }
       }
     });
 
     notification.show();
+  } catch (err) {
+    logger.error("Erreur affichage notification:", err);
   }
 }
 
+/**
+ * Gère le clic sur une notification
+ * @param {string} qrContent - Contenu du QR
+ */
+function handleNotificationClick(qrContent) {
+  try {
+    if (
+      qrContent.startsWith("http://") ||
+      qrContent.startsWith("https://")
+    ) {
+      mainWindow.loadURL(qrContent).catch((err) => {
+        logger.error("Erreur chargement URL notification:", err);
+        mainWindow.loadURL(
+          `${CONFIG.baseURL}/?qr=${encodeURIComponent(qrContent)}`
+        );
+      });
+    } else if (qrContent.startsWith("wagoo://")) {
+      handleDeepLink(qrContent);
+    } else {
+      mainWindow.loadURL(
+        `${CONFIG.baseURL}/?qr=${encodeURIComponent(qrContent)}`
+      );
+    }
+  } catch (err) {
+    logger.error("Erreur gestion clic notification:", err);
+  }
+}
+
+/**
+ * Arrête le serveur WebSocket et ferme les connexions
+ */
 function stopWebSocketServer() {
   if (wss) {
-    wsConnections.forEach((ws) => {
-      ws.close();
-    });
-    wsConnections.clear();
+    try {
+      // Fermer tous les heartbeat intervals
+      wsHeartbeatIntervals.forEach((interval) => {
+        clearInterval(interval);
+      });
+      wsHeartbeatIntervals.clear();
 
-    wss.close(() => {
-      console.log("[WebSocket] Serveur arrêté");
-    });
-    wss = null;
+      // Fermer toutes les connexions
+      wsConnections.forEach((connData) => {
+        try {
+          connData.ws.close(1000, "Arrêt serveur");
+        } catch (err) {
+          logger.debug("Erreur fermeture WS:", err);
+        }
+      });
+      wsConnections.clear();
+
+      // Fermer le serveur
+      wss.close(() => {
+        logger.info("Serveur WebSocket arrêté");
+      });
+      wss = null;
+    } catch (err) {
+      logger.error("Erreur arrêt WebSocket:", err);
+    }
   }
 }
 
+/**
+ * Broadcast un message à tous les clients connectés
+ * @param {object} message - Message à envoyer
+ */
 function broadcastToClients(message) {
-  wsConnections.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
+  wsConnections.forEach((connData) => {
+    try {
+      if (connData.ws && connData.ws.readyState === WebSocket.OPEN) {
+        connData.ws.send(JSON.stringify(message));
+      }
+    } catch (err) {
+      logger.debug("Erreur broadcast:", err);
     }
   });
 }
@@ -327,434 +592,542 @@ ipcMain.handle("discovery:getInfo", async () => {
 // TRAY (System Tray Icon)
 // ========================================
 
+/**
+ * Retourne le chemin de l'icône avec fallback
+ * @param {string} filename - Nom du fichier
+ * @returns {string} Chemin de l'icône ou icône par défaut
+ */
+function getIconPath(filename) {
+  const paths = [
+    path.join(__dirname, `assets/${filename}`),
+    path.join(__dirname, `assets/icons/${filename}`),
+    path.join(__dirname, filename),
+  ];
+
+  for (const iconPath of paths) {
+    if (fs.existsSync(iconPath)) {
+      return iconPath;
+    }
+  }
+
+  logger.warn(`Icône introuvable: ${filename}, utilisation fallback`);
+  // Créer une icône vide par défaut pour éviter le crash
+  return nativeTheme.shouldUseDarkColors
+    ? path.join(__dirname, "assets/tray/icon-dark.png")
+    : path.join(__dirname, "assets/tray/icon-light.png");
+}
+
+/**
+ * Retourne l'icône du tray selon le thème
+ * @returns {string} Chemin de l'icône tray
+ */
+function getTrayIcon() {
+  const isDark = nativeTheme.shouldUseDarkColors;
+
+  if (isDark) {
+    return getIconPath("tray/icon-dark.png");
+  } else {
+    return getIconPath("tray/icon-light.png");
+  }
+}
+
+/**
+ * Crée l'icône du tray système
+ */
 function createTray() {
-  // Si le tray existe déjà, ne pas le recréer
   if (tray) return;
 
-  tray = new Tray(path.join(__dirname, "assets/logo.png"));
+  try {
+    const iconPath = getTrayIcon();
+    tray = new Tray(iconPath);
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: "Ouvrir Wagoo",
-      click: () => {
-        if (mainWindow) {
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: "Ouvrir Wagoo",
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+            if (mainWindow.isMinimized()) {
+              mainWindow.restore();
+            }
+          } else {
+            createWindow();
+          }
+        },
+      },
+      { type: "separator" },
+      {
+        label: `Version ${app.getVersion()}`,
+        enabled: false,
+      },
+      {
+        label: "À propos",
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+          showAboutDialog();
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Vérifier les mises à jour",
+        click: () => {
+          autoUpdater.checkForUpdates();
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Quitter",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]);
+
+    tray.setToolTip("Wagoo Desktop");
+    tray.setContextMenu(contextMenu);
+
+    // Clic gauche sur l'icône : ouvrir/masquer la fenêtre
+    tray.on("click", () => {
+      if (mainWindow) {
+        if (mainWindow.isVisible()) {
+          mainWindow.hide();
+        } else {
           mainWindow.show();
           mainWindow.focus();
           if (mainWindow.isMinimized()) {
             mainWindow.restore();
           }
-        } else {
-          createWindow();
         }
-      },
-    },
-    { type: "separator" },
-    {
-      label: `Version ${app.getVersion()}`,
-      enabled: false,
-    },
-    {
-      label: "À propos",
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
-        // Afficher la fenêtre "À propos"
-        showAboutDialog();
-      },
-    },
-    { type: "separator" },
-    {
-      label: "Vérifier les mises à jour",
-      click: () => {
-        autoUpdater.checkForUpdates();
-      },
-    },
-    { type: "separator" },
-    {
-      label: "Quitter",
-      click: () => {
-        isQuitting = true;
-        app.quit();
-      },
-    },
-  ]);
-
-  tray.setToolTip("Wagoo Desktop");
-  tray.setContextMenu(contextMenu);
-
-  // Clic gauche sur l'icône : ouvrir/masquer la fenêtre
-  tray.on("click", () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.hide();
       } else {
+        createWindow();
+      }
+    });
+
+    // Double-clic : toujours afficher
+    tray.on("double-click", () => {
+      if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
         if (mainWindow.isMinimized()) {
           mainWindow.restore();
         }
+      } else {
+        createWindow();
       }
-    } else {
-      createWindow();
-    }
-  });
+    });
 
-  // Double-clic : toujours afficher
-  tray.on("double-click", () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
+    // Écouter les changements de thème et mettre à jour l'icône
+    nativeTheme.on("updated", () => {
+      try {
+        if (tray && !tray.isDestroyed()) {
+          tray.setImage(getTrayIcon());
+        }
+      } catch (err) {
+        logger.error("Erreur mise à jour icône tray:", err);
       }
-    } else {
-      createWindow();
-    }
-  });
+    });
+
+    logger.info("Tray créé avec succès");
+  } catch (err) {
+    logger.error("Erreur création tray:", err);
+  }
 }
 
 // ========================================
 // FENÊTRES
 // ========================================
 
+/**
+ * Affiche la fenêtre offline avec gestion d'erreurs
+ */
 function showOfflineWindow() {
-  const offlineWindow = new BrowserWindow({
-    width: 480,
-    height: 300,
-    frame: false,
-    transparent: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
+  try {
+    const offlineWindow = new BrowserWindow({
+      width: 480,
+      height: 300,
+      frame: false,
+      transparent: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
 
-  const html = `
-    <!DOCTYPE html>
-    <html lang="fr">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="color-scheme" content="light dark">
-        <style>
-          body {
-            margin: 0;
-            -webkit-app-region: drag;
-            height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-direction: column;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background-color: transparent;
-            color: #333;
-          }
-          .card {
-            text-align: center;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.1);
-            background: #fff;
-            width: 380px;
-          }
-          h2 {
-            margin-bottom: 10px;
-            -webkit-app-region: no-drag;
-          }
-          p {
-            color: #555;
-            font-size: 14px;
-            -webkit-app-region: no-drag;
-          }
-          a {
-            color: #b700ff;
-            text-decoration: none;
-            font-weight: 500;
-            -webkit-app-region: no-drag;
-          }
-          a:hover {
-            text-decoration: underline;
-            -webkit-app-region: no-drag;
-          }
-          button {
-            margin-top: 20px;
-            padding: 10px 18px;
-            border: none;
-            border-radius: 8px;
-            background: #b700ff;
-            color: white;
-            cursor: pointer;
-            -webkit-app-region: no-drag;
-            font-size: 14px;
-          }
-          button:hover {
-            background: #a000e0;
-          }
-
-          @media (prefers-color-scheme: dark) {
+    const html = `
+      <!DOCTYPE html>
+      <html lang="fr">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="color-scheme" content="light dark">
+          <style>
             body {
-              color: #e5e5e5;
+              margin: 0;
+              -webkit-app-region: drag;
+              height: 100vh;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              flex-direction: column;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+              background-color: transparent;
+              color: #333;
             }
             .card {
-              background: #1e1e1e;
-              box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+              text-align: center;
+              padding: 30px;
+              border-radius: 12px;
+              box-shadow: 0 8px 30px rgba(0,0,0,0.1);
+              background: #fff;
+              width: 380px;
+            }
+            h2 {
+              margin-bottom: 10px;
+              -webkit-app-region: no-drag;
             }
             p {
-              color: #b0b0b0;
+              color: #555;
+              font-size: 14px;
+              -webkit-app-region: no-drag;
             }
             a {
-              color: #c77dff;
+              color: #b700ff;
+              text-decoration: none;
+              font-weight: 500;
+              -webkit-app-region: no-drag;
+            }
+            a:hover {
+              text-decoration: underline;
             }
             button {
-              background: #9d4edd;
+              margin-top: 20px;
+              padding: 10px 18px;
+              border: none;
+              border-radius: 8px;
+              background: #b700ff;
+              color: white;
+              cursor: pointer;
+              -webkit-app-region: no-drag;
+              font-size: 14px;
             }
             button:hover {
-              background: #7b2cbf;
+              background: #a000e0;
             }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h2>⚠️ Un problème est survenu</h2>
-          <p>Impossible de contacter le serveur Wagoo.</p>
-          <p>Consultez notre uptime : 
-            <a href="https://uptime.wagoo.app" target="_blank">uptime.wagoo.app</a>
-          </p>
-          <button onclick="window.close()">Fermer</button>
-        </div>
-      </body>
-    </html>
-  `;
 
-  offlineWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-  );
+            @media (prefers-color-scheme: dark) {
+              body {
+                color: #e5e5e5;
+              }
+              .card {
+                background: #1e1e1e;
+                box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+              }
+              p {
+                color: #b0b0b0;
+              }
+              a {
+                color: #c77dff;
+              }
+              button {
+                background: #9d4edd;
+              }
+              button:hover {
+                background: #7b2cbf;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h2>⚠️ Un problème est survenu</h2>
+            <p>Impossible de contacter le serveur Wagoo.</p>
+            <p>Consultez notre uptime : 
+              <a href="https://uptime.wagoo.app" target="_blank">uptime.wagoo.app</a>
+            </p>
+            <button onclick="window.close()">Fermer</button>
+          </div>
+        </body>
+      </html>
+    `;
 
-  createMenu();
+    offlineWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+    );
 
-  offlineWindow.once("ready-to-show", () => {
-    offlineWindow.show();
-  });
+    createMenu();
+
+    offlineWindow.once("ready-to-show", () => {
+      offlineWindow.show();
+    });
+
+    offlineWindow.on("closed", () => {
+      logger.info("Fenêtre offline fermée");
+    });
+  } catch (err) {
+    logger.error("Erreur affichage fenêtre offline:", err);
+  }
 }
 
+/**
+ * Crée la fenêtre principale avec gestion d'erreurs robuste
+ */
 function createWindow() {
-  const wagooSession = session.fromPartition("persist:wagoo-session");
+  try {
+    const wagooSession = session.fromPartition("persist:wagoo-session");
 
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    title: "Wagoo Desktop - v" + app.getVersion(),
-    frame: false,
-    autoHideMenuBar: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      session: wagooSession,
-      preload: path.join(__dirname, "preload.js"),
-      devTools: CONFIG.isDev,
-    },
-    show: false, // Démarrer caché
-  });
+    mainWindow = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      title: "Wagoo Desktop - v" + app.getVersion(),
+      frame: false,
+      autoHideMenuBar: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        session: wagooSession,
+        preload: path.join(__dirname, "preload.js"),
+        devTools: CONFIG.isDev,
+      },
+      show: false,
+    });
 
-  const loadMainURL = async () => {
-    const targetURL = deeplinkingUrl
-      ? buildTargetFromWagoo(deeplinkingUrl)
-      : CONFIG.baseURL;
+    const loadMainURL = async () => {
+      const targetURL = deeplinkingUrl
+        ? buildTargetFromWagoo(deeplinkingUrl)
+        : CONFIG.baseURL;
 
-    try {
-      const res = await fetch(targetURL, { method: "HEAD", timeout: 5000 });
-      if (!res.ok) throw new Error("Site inaccessible");
+      try {
+        const res = await fetchWithTimeout(targetURL, { method: "HEAD" });
+        if (!res.ok) throw new Error("Site inaccessible");
 
-      mainWindow.loadURL(targetURL);
-    } catch (err) {
-      console.error("[main] Site non joignable :", err);
-      if (mainWindow) mainWindow.close();
-
-      showOfflineWindow();
-    }
-  };
-
-  loadMainURL();
-
-  mainWindow.webContents.on("did-finish-load", () => {
-    // Afficher la fenêtre au démarrage
-    mainWindow.show();
-    mainWindow.maximize();
-    console.log("[App] Fenêtre affichée au démarrage");
-  });
-
-  // IMPORTANT: Empêcher la fermeture complète, juste masquer la fenêtre
-  mainWindow.on("close", (event) => {
-    if (!isQuitting) {
-      event.preventDefault();
-      mainWindow.hide();
-
-      // Afficher une notification pour informer l'utilisateur
-      if (Notification.isSupported()) {
-        new Notification({
-          title: "Wagoo Desktop",
-          body: "L'application continue de fonctionner en arrière-plan. Utilisez l'icône dans la barre des tâches pour la rouvrir.",
-          icon: path.join(__dirname, "assets/logo.png"),
-        }).show();
+        mainWindow.loadURL(targetURL);
+      } catch (err) {
+        logger.error("Erreur chargement URL:", err);
+        if (mainWindow) mainWindow.close();
+        showOfflineWindow();
       }
+    };
 
-      return false;
-    }
-  });
+    loadMainURL();
 
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
+    mainWindow.webContents.on("did-finish-load", () => {
+      mainWindow.show();
+      mainWindow.maximize();
+      logger.info("Fenêtre affichée au démarrage");
+    });
+
+    mainWindow.on("close", (event) => {
+      if (!isQuitting) {
+        event.preventDefault();
+        mainWindow.hide();
+
+        if (Notification.isSupported()) {
+          try {
+            new Notification({
+              title: "Wagoo Desktop",
+              body: "L'application continue de fonctionner en arrière-plan. Utilisez l'icône dans la barre des tâches pour la rouvrir.",
+              icon: getIconPath("logo.png"),
+            }).show();
+          } catch (err) {
+            logger.error("Erreur notification fermeture:", err);
+          }
+        }
+
+        return false;
+      }
+    });
+
+    mainWindow.on("closed", () => {
+      mainWindow = null;
+    });
+
+    // Gestion des erreurs de contenu
+    mainWindow.webContents.on("crashed", () => {
+      logger.error("Contenu webview crashed");
+      showOfflineWindow();
+    });
+
+    mainWindow.webContents.on("unresponsive", () => {
+      logger.warn("Contenu webview ne répond pas");
+    });
+  } catch (err) {
+    logger.error("Erreur création fenêtre:", err);
+    showOfflineWindow();
+  }
 }
 
+/**
+ * Affiche le dialog "À propos" avec gestion d'erreurs
+ */
 function showAboutDialog() {
-  const aboutWindow = new BrowserWindow({
-    width: 500,
-    height: 400,
-    parent: mainWindow,
-    modal: false,
-    resizable: false,
-    frame: false,
-    transparent: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
+  try {
+    const aboutWindow = new BrowserWindow({
+      width: 500,
+      height: 400,
+      parent: mainWindow,
+      modal: false,
+      resizable: false,
+      frame: false,
+      transparent: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="fr">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="color-scheme" content="light dark">
-        <title>À propos</title>
-        <style>
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            margin: 0;
-            padding: 30px;
-            background-color: transparent;
-            color: #333;
-            -webkit-app-region: drag;
-          }
-          .container {
-            background: #fff;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-            position: relative;
-          }
-          .close-btn {
-            position: absolute;
-            top: 15px;
-            right: 15px;
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
-            background: #f0f0f0;
-            border: none;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            color: #666;
-            -webkit-app-region: no-drag;
-            transition: background 0.2s;
-          }
-          .close-btn:hover {
-            background: #e0e0e0;
-            color: #333;
-          }
-          h1 {
-            margin-top: 0;
-            font-size: 1.8em;
-            -webkit-app-region: no-drag;
-          }
-          p {
-            color: #555;
-            line-height: 1.6;
-            margin: 10px 0;
-            -webkit-app-region: no-drag;
-          }
-
-          @media (prefers-color-scheme: dark) {
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="fr">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="color-scheme" content="light dark">
+          <title>À propos</title>
+          <style>
             body {
-              color: #e5e5e5;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+              margin: 0;
+              padding: 30px;
+              background-color: transparent;
+              color: #333;
+              -webkit-app-region: drag;
             }
             .container {
-              background: #1e1e1e;
-              box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+              background: #fff;
+              padding: 30px;
+              border-radius: 10px;
+              box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+              position: relative;
             }
             .close-btn {
-              background: #2a2a2a;
-              color: #999;
+              position: absolute;
+              top: 15px;
+              right: 15px;
+              width: 30px;
+              height: 30px;
+              border-radius: 50%;
+              background: #f0f0f0;
+              border: none;
+              cursor: pointer;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              font-size: 18px;
+              color: #666;
+              -webkit-app-region: no-drag;
+              transition: background 0.2s;
             }
             .close-btn:hover {
-              background: #3a3a3a;
-              color: #e5e5e5;
+              background: #e0e0e0;
+              color: #333;
+            }
+            h1 {
+              margin-top: 0;
+              font-size: 1.8em;
+              -webkit-app-region: no-drag;
             }
             p {
-              color: #b0b0b0;
+              color: #555;
+              line-height: 1.6;
+              margin: 10px 0;
+              -webkit-app-region: no-drag;
             }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <button class="close-btn" onclick="window.close()">×</button>
-          <h1>À propos de Wagoo Desktop</h1>
-          <p><strong>Version :</strong> ${app.getVersion()}</p>
-          <p><strong>Auteur :</strong> WAGOO SAAS</p>
-          <p><strong>Powered by :</strong> Electron.JS</p>
-          <p style="margin-top: 20px; font-size: 12px; color: #888;">
-            L'application reste active en arrière-plan même après fermeture de la fenêtre.
-          </p>
-        </div>
-      </body>
-    </html>
-  `;
 
-  aboutWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`
-  );
-  aboutWindow.setMenuBarVisibility(false);
+            @media (prefers-color-scheme: dark) {
+              body {
+                color: #e5e5e5;
+              }
+              .container {
+                background: #1e1e1e;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+              }
+              .close-btn {
+                background: #2a2a2a;
+                color: #999;
+              }
+              .close-btn:hover {
+                background: #3a3a3a;
+                color: #e5e5e5;
+              }
+              p {
+                color: #b0b0b0;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <button class="close-btn" onclick="window.close()">×</button>
+            <h1>À propos de Wagoo Desktop</h1>
+            <p><strong>Version :</strong> ${app.getVersion()}</p>
+            <p><strong>Auteur :</strong> WAGOO SAAS</p>
+            <p><strong>Powered by :</strong> Electron.JS</p>
+            <p style="margin-top: 20px; font-size: 12px; color: #888;">
+              L'application reste active en arrière-plan même après fermeture de la fenêtre.
+            </p>
+          </div>
+        </body>
+      </html>
+    `;
+
+    aboutWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`
+    );
+    aboutWindow.setMenuBarVisibility(false);
+  } catch (err) {
+    logger.error("Erreur affichage dialog À propos:", err);
+  }
 }
 
+/**
+ * Construit une URL cible depuis un deeplink wagoo://
+ * @param {string} rawUrl - URL brute à traiter
+ * @returns {string} URL complète à charger
+ */
 function buildTargetFromWagoo(rawUrl) {
   try {
     const urlObj = new URL(rawUrl);
-    let path = "";
+    let pathStr = "";
     if (urlObj.hostname && urlObj.hostname !== "")
-      path += `/${urlObj.hostname}`;
-    if (urlObj.pathname && urlObj.pathname !== "/") path += urlObj.pathname;
-    path = path.replace(/^\/+/, "");
+      pathStr += `/${urlObj.hostname}`;
+    if (urlObj.pathname && urlObj.pathname !== "/") pathStr += urlObj.pathname;
+    pathStr = pathStr.replace(/^\/+/, "");
     const base = CONFIG.baseURL + "/";
-    return path ? `${base}${path}${urlObj.search}` : `${base}${urlObj.search}`;
+    return pathStr ? `${base}${pathStr}${urlObj.search}` : `${base}${urlObj.search}`;
   } catch (err) {
-    console.error("[main] buildTargetFromWagoo error:", err, "rawUrl:", rawUrl);
+    logger.error("Erreur buildTargetFromWagoo:", err);
     return CONFIG.baseURL + "/";
   }
 }
 
+/**
+ * Gère les deeplinks wagoo://
+ * @param {string} rawUrl - URL deeplink
+ */
 function handleDeepLink(rawUrl) {
-  console.log("[main] handleDeepLink:", rawUrl);
-  if (!rawUrl || !rawUrl.startsWith("wagoo://")) return;
+  try {
+    logger.info(`Traitement deeplink: ${rawUrl}`);
+    if (!rawUrl || !rawUrl.startsWith("wagoo://")) return;
 
-  const target = buildTargetFromWagoo(rawUrl);
-  if (mainWindow) {
-    console.log("[main] loading target:", target);
-    mainWindow.loadURL(target).catch((e) => console.error(e));
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  } else {
-    console.log("[main] no window yet, saving deeplink to handle after ready");
-    deeplinkingUrl = rawUrl;
+    const target = buildTargetFromWagoo(rawUrl);
+    if (mainWindow) {
+      logger.debug(`Chargement cible: ${target}`);
+      mainWindow.loadURL(target).catch((e) => {
+        logger.error("Erreur chargement deeplink:", e);
+      });
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    } else {
+      logger.debug("Fenêtre pas prête, sauvegarde deeplink");
+      deeplinkingUrl = rawUrl;
+    }
+  } catch (err) {
+    logger.error("Erreur gestion deeplink:", err);
   }
 }
 
@@ -961,10 +1334,11 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
-  // Arrêter les services réseau avant de quitter
+  logger.info("Application en train de fermer...");
   isQuitting = true;
   stopWebSocketServer();
   stopDiscoveryService();
+  logger.info("Services arrêtés, arrêt application");
 });
 
 // ========================================
@@ -986,18 +1360,24 @@ ipcMain.on("window:close", () => {
   }
 });
 
+/**
+ * Envoie le statut des connexions WebSocket à la fenêtre
+ */
 function sendConnectionStatus() {
   const status = {
-    devices: Array.from(wsConnections).map((ws) => ({
-      ip: ws._socket.remoteAddress,
-      port: ws._socket.remotePort,
+    devices: Array.from(wsConnections.values()).map((connData) => ({
+      ip: connData.clientData.ip,
       platform: "unknown",
+      timestamp: Date.now(),
     })),
   };
 
-  // Envoi via IPC
-  if (mainWindow) {
-    mainWindow.webContents.send("connection:status", status);
+  if (mainWindow && mainWindow.webContents) {
+    try {
+      mainWindow.webContents.send("connection:status", status);
+    } catch (err) {
+      logger.debug("Erreur envoi status:", err);
+    }
   }
 }
 
