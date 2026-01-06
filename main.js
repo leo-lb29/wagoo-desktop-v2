@@ -261,7 +261,7 @@ function startWebSocketServer() {
       return;
     }
   }
-
+// TODO: Vérifier le system de websockets et les dif avec le commit 597127d78fd37c07d69e328a10a4344f40e6822d
   wss.on("error", (err) => {
     logger.error("Erreur serveur WebSocket:", err);
   });
