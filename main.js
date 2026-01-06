@@ -291,6 +291,22 @@ function startWebSocketServer() {
       wsConnections.set(wsId, { ws, clientData });
       sendConnectionStatus();
 
+      // Notification de connexion d'un nouvel appareil
+      try {
+        const notificationMessage = `Appareil appairé depuis ${clientIP}`;
+        if (Notification.isSupported()) {
+          const notification = new Notification({
+            title: "Wagoo Desktop",
+            body: notificationMessage,
+            icon: path.join(__dirname, "assets/logo.png"),
+          });
+          notification.show();
+        }
+        logger.info(`Notification envoyée: ${notificationMessage}`);
+      } catch (err) {
+        logger.debug("Erreur notification connexion:", err);
+      }
+
       // Envoi message bienvenue
       try {
         ws.send(
@@ -574,7 +590,7 @@ ipcMain.handle("ws:getStatus", async () => {
   return {
     running: wss !== null,
     connections: wsConnections.size,
-    port: WS_PORT,
+    port: CONFIG.wsPort,
     ip: getLocalIPAddress(),
   };
 });
@@ -582,9 +598,9 @@ ipcMain.handle("ws:getStatus", async () => {
 ipcMain.handle("discovery:getInfo", async () => {
   return {
     running: discoverySocket !== null,
-    port: DISCOVERY_PORT,
+    port: CONFIG.discoveryPort,
     ip: getLocalIPAddress(),
-    serviceName: SERVICE_NAME,
+    serviceName: CONFIG.serviceName,
   };
 });
 
