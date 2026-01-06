@@ -1,6 +1,6 @@
 {
   "name": "wagoo",
-  "version": "0.0.1",
+  "version": "1.0.1",
   "description": "Electron wrapper sécurisé pour un site Next.js, avec auto-update et session persistante.",
   "main": "main.js",
   "author": {
