@@ -1,11 +1,11 @@
-name: mon-projet
-description: Description du projet
+name: wagoo-desktop
+description: Desktop App for WAGOO
 version:
   major: 0
   minor: 0
-  patch: 2
+  patch: 3
   name_version: ""
-  note_version: Updated to v0.0.2
+  note_version: Updated to v0.0.3
 links:
   - name: Frontend
     url: http://localhost:3000
