@@ -17,7 +17,7 @@ if (!process.env.PROD_BASE_URL) {
   process.env.WS_HEARTBEAT_INTERVAL = "30000";
   process.env.WS_CONNECTION_TIMEOUT = "10000";
   process.env.LOG_LEVEL = "info";
-  process.env.WS_LOCALHOST_ONLY = "true";
+  process.env.WS_LOCALHOST_ONLY = "false"; // Écouter sur 0.0.0.0 pour réseau
 }
 const {
   app,
@@ -70,9 +70,8 @@ let mainWindow = null;
 let deeplinkingUrl = null;
 let wss = null;
 let discoverySocket = null;
-let wsConnections = new Map(); // Map au lieu de Set pour meilleure gestion
+let wsConnections = new Set();
 let isQuitting = false;
-let wsHeartbeatIntervals = new Map();
 
 /**
  * Configuration centralisée dev/prod depuis les variables d'environnement
@@ -262,119 +261,46 @@ function startWebSocketServer() {
       return;
     }
   }
-
+// TODO: Vérifier le system de websockets et les dif avec le commit 597127d78fd37c07d69e328a10a4344f40e6822d
   wss.on("error", (err) => {
     logger.error("Erreur serveur WebSocket:", err);
   });
 
   wss.on("connection", (ws, req) => {
-    try {
-      // Vérifier limite de connexions
-      if (wsConnections.size >= CONFIG.maxConnections) {
-        logger.warn(`Limite connexions atteinte (${CONFIG.maxConnections})`);
-        ws.close(1008, "Serveur plein");
-        return;
-      }
+    const clientIP = req.socket.remoteAddress;
+    console.log(`[WebSocket] Nouvelle connexion depuis ${clientIP}`);
+    wsConnections.add(ws);
+    sendConnectionStatus();
 
-      const clientIP = req.socket.remoteAddress;
-      const wsId = `${clientIP}-${Date.now()}`;
+    ws.send(
+      JSON.stringify({
+        type: "connected",
+        message: "Connecté à Wagoo Desktop",
+        version: app.getVersion(),
+      })
+    );
 
-      logger.info(`Nouvelle connexion WebSocket depuis ${clientIP}`);
-      
-      // Initialiser rate limiting
-      const clientData = {
-        ip: clientIP,
-        messageCount: 0,
-        windowStart: Date.now(),
-      };
-
-      wsConnections.set(wsId, { ws, clientData });
-      sendConnectionStatus();
-
-      // Envoi message bienvenue
+    ws.on("message", (data) => {
       try {
-        ws.send(
-          JSON.stringify({
-            type: "connected",
-            message: "Connecté à Wagoo Desktop",
-            version: app.getVersion(),
-          })
-        );
+        const message = JSON.parse(data.toString());
+        console.log("[WebSocket] Message reçu:", message);
+        handleWebSocketMessage(message, ws);
       } catch (err) {
-        logger.error("Erreur envoi message connexion:", err);
+        console.error("[WebSocket] Erreur parsing message:", err);
       }
+    });
 
-      // Heartbeat pour maintenir la connexion
-      const heartbeatInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.ping();
-          } catch (err) {
-            logger.debug("Erreur ping heartbeat:", err);
-          }
-        }
-      }, CONFIG.wsHeartbeat);
+    ws.on("close", () => {
+      console.log(`[WebSocket] Connexion fermée depuis ${clientIP}`);
+      wsConnections.delete(ws);
+      sendConnectionStatus();
+    });
 
-      wsHeartbeatIntervals.set(wsId, heartbeatInterval);
-
-      ws.on("message", (data) => {
-        try {
-          // Rate limiting
-          clientData.messageCount++;
-          const now = Date.now();
-          if (now - clientData.windowStart > CONFIG.rateLimitWindow) {
-            clientData.messageCount = 1;
-            clientData.windowStart = now;
-          }
-
-          if (clientData.messageCount > CONFIG.rateLimitMax) {
-            logger.warn(`Rate limit dépassé pour ${clientIP}`);
-            ws.close(1008, "Rate limit exceeded");
-            return;
-          }
-
-          // Valider et traiter message
-          const message = JSON.parse(data.toString());
-          if (!validateWSMessage(message)) {
-            logger.warn(`Message invalide reçu de ${clientIP}`);
-            return;
-          }
-
-          handleWebSocketMessage(message, ws);
-        } catch (err) {
-          logger.error("Erreur traitement message WebSocket:", err);
-        }
-      });
-
-      ws.on("close", () => {
-        logger.info(`Connexion fermée depuis ${clientIP}`);
-        wsConnections.delete(wsId);
-        
-        const interval = wsHeartbeatIntervals.get(wsId);
-        if (interval) {
-          clearInterval(interval);
-          wsHeartbeatIntervals.delete(wsId);
-        }
-
-        sendConnectionStatus();
-      });
-
-      ws.on("error", (err) => {
-        logger.error("Erreur connexion WebSocket:", err);
-        wsConnections.delete(wsId);
-        
-        const interval = wsHeartbeatIntervals.get(wsId);
-        if (interval) {
-          clearInterval(interval);
-          wsHeartbeatIntervals.delete(wsId);
-        }
-
-        sendConnectionStatus();
-      });
-    } catch (err) {
-      logger.error("Erreur dans handler connexion:", err);
-      ws.close(1011, "Erreur interne");
-    }
+    ws.on("error", (err) => {
+      console.error("[WebSocket] Erreur connexion:", err);
+      wsConnections.delete(ws);
+      sendConnectionStatus();
+    });
   });
 }
 
@@ -517,31 +443,15 @@ function handleNotificationClick(qrContent) {
  */
 function stopWebSocketServer() {
   if (wss) {
-    try {
-      // Fermer tous les heartbeat intervals
-      wsHeartbeatIntervals.forEach((interval) => {
-        clearInterval(interval);
-      });
-      wsHeartbeatIntervals.clear();
+    wsConnections.forEach((ws) => {
+      ws.close();
+    });
+    wsConnections.clear();
 
-      // Fermer toutes les connexions
-      wsConnections.forEach((connData) => {
-        try {
-          connData.ws.close(1000, "Arrêt serveur");
-        } catch (err) {
-          logger.debug("Erreur fermeture WS:", err);
-        }
-      });
-      wsConnections.clear();
-
-      // Fermer le serveur
-      wss.close(() => {
-        logger.info("Serveur WebSocket arrêté");
-      });
-      wss = null;
-    } catch (err) {
-      logger.error("Erreur arrêt WebSocket:", err);
-    }
+    wss.close(() => {
+      console.log("[WebSocket] Serveur arrêté");
+    });
+    wss = null;
   }
 }
 
@@ -550,13 +460,9 @@ function stopWebSocketServer() {
  * @param {object} message - Message à envoyer
  */
 function broadcastToClients(message) {
-  wsConnections.forEach((connData) => {
-    try {
-      if (connData.ws && connData.ws.readyState === WebSocket.OPEN) {
-        connData.ws.send(JSON.stringify(message));
-      }
-    } catch (err) {
-      logger.debug("Erreur broadcast:", err);
+  wsConnections.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
     }
   });
 }
@@ -573,8 +479,8 @@ ipcMain.handle("ws:send", async (event, message) => {
 ipcMain.handle("ws:getStatus", async () => {
   return {
     running: wss !== null,
-    connections: wsConnections.size,
-    port: WS_PORT,
+    connections: wsConnections.size, // Set.size donne le nombre d'éléments
+    port: CONFIG.wsPort,
     ip: getLocalIPAddress(),
   };
 });
@@ -582,9 +488,9 @@ ipcMain.handle("ws:getStatus", async () => {
 ipcMain.handle("discovery:getInfo", async () => {
   return {
     running: discoverySocket !== null,
-    port: DISCOVERY_PORT,
+    port: CONFIG.discoveryPort,
     ip: getLocalIPAddress(),
-    serviceName: SERVICE_NAME,
+    serviceName: CONFIG.serviceName,
   };
 });
 
@@ -1365,19 +1271,16 @@ ipcMain.on("window:close", () => {
  */
 function sendConnectionStatus() {
   const status = {
-    devices: Array.from(wsConnections.values()).map((connData) => ({
-      ip: connData.clientData.ip,
+    devices: Array.from(wsConnections).map((ws) => ({
+      ip: ws._socket.remoteAddress,
+      port: ws._socket.remotePort,
       platform: "unknown",
-      timestamp: Date.now(),
     })),
   };
 
-  if (mainWindow && mainWindow.webContents) {
-    try {
-      mainWindow.webContents.send("connection:status", status);
-    } catch (err) {
-      logger.debug("Erreur envoi status:", err);
-    }
+  // Envoi via IPC
+  if (mainWindow) {
+    mainWindow.webContents.send("connection:status", status);
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "wagoo",
-  "version": "1.0.37",
+  "version": "1.0.0",
   "description": "Electron wrapper sécurisé pour un site Next.js, avec auto-update et session persistante.",
   "main": "main.js",
   "author": {
@@ -50,8 +50,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "leo-lb29",
-        "repo": "wagoo-desktop-v2"
+        "owner": "wagoo-app",
+        "repo": "desktop"
       }
     ]
   },
