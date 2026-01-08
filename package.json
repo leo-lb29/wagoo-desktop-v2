@@ -48,7 +48,7 @@
     "deb": {
       "packageName": "wagoo-desktop",
       "priority": "optional",
-      "section": "net",
+      "packageCategory": "net",
       "depends": [
         "libgtk-3-0",
         "libnss3",
