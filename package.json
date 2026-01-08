@@ -14,13 +14,7 @@
     "icons": "pnpx electron-icon-maker --input=./assets/logo.png --output=./assets"
   },
   "build": {
-    "appId": "app.wagoo.electron",
-    "protocols": {
-      "name": "Wagoo",
-      "schemes": [
-        "wagoo"
-      ]
-    },
+    "appId": "app.wagoo.desktop",
     "productName": "Wagoo Desktop",
     "directories": {
       "output": "dist",
@@ -32,20 +26,38 @@
       "logger.js",
       ".env",
       "package.json",
-      "assets/**/*",
-      "logo.ico"
+      "assets/**/*"
     ],
+    "protocols": {
+      "name": "Wagoo",
+      "schemes": [
+        "wagoo"
+      ]
+    },
     "win": {
       "icon": "assets/icons/win/icon.ico",
       "target": "nsis"
     },
     "linux": {
-      "icon": "assets/icons/png",
       "target": [
-        "AppImage",
         "deb"
       ],
-      "category": "Network"
+      "category": "Network",
+      "icon": "assets/icons/png"
+    },
+    "deb": {
+      "packageName": "wagoo-desktop",
+      "priority": "optional",
+      "section": "net",
+      "depends": [
+        "libgtk-3-0",
+        "libnss3",
+        "libxss1",
+        "libasound2",
+        "libatk-bridge2.0-0",
+        "libdrm2",
+        "libgbm1"
+      ]
     },
     "publish": [
       {
